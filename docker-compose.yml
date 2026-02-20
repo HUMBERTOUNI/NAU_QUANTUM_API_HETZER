@@ -6,4 +6,3 @@ services:
     restart: always
     ports:
       - "8000:8000"
-    command: sh -c "pip install -r requirements.txt && python api.py"
