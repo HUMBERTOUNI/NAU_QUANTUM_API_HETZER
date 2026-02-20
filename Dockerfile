@@ -10,8 +10,8 @@ COPY nau_quantum_engine.py .
 COPY start.sh .
 RUN chmod +x start.sh
 
-COPY static/ ./static/ 
+COPY static/ ./static/
 
-EXPOSE 8000
+EXPOSE 8080
 
 ENTRYPOINT ["/app/start.sh"]
