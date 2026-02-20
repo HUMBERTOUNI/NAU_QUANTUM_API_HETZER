@@ -6,3 +6,4 @@ services:
     restart: always
     ports:
       - "8000:8000"
+      # Forzar actualizacion de Coolify
