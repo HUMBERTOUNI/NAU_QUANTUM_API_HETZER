@@ -1,9 +1,6 @@
-version: '3.8'
-
 services:
-  web:
+  nau-quantum-api:
     build: .
-    restart: always
     ports:
       - "8000:8000"
-      # Forzar actualizacion de Coolify
+    restart: always
