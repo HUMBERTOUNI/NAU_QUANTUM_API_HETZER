@@ -1,17 +1,12 @@
-FROM python:3.11-slim
+FROM python:3.9-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY api.py .
-COPY nau_quantum_engine.py .
-COPY start.sh .
-RUN chmod +x start.sh
-
-COPY static/ ./static/ 
+COPY . .
 
 EXPOSE 8000
-
-ENTRYPOINT ["/app/start.sh"]
