@@ -1,22 +1,17 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Instalar dependencias del sistema
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copiar e instalar los requerimientos de Python PRIMERO
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el resto de tu código
-COPY . .
+COPY api.py .
+COPY nau_quantum_engine.py .
+COPY start.sh .
+RUN chmod +x start.sh
 
-# Exponer el puerto
+COPY static/ ./static/ 
+
 EXPOSE 8000
 
-# El comando a prueba de fallos para arrancar la API
-CMD ["python", "api.py"]
+ENTRYPOINT ["/app/start.sh"]
