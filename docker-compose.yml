@@ -1,6 +1,6 @@
 services:
-  nau-quantum-api:
+  sentinel-quantum-edge:
     build: .
     ports:
-      - "8000:8000"
+      - "9000:9000"
     restart: always
