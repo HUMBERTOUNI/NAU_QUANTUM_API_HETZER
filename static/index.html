@@ -258,11 +258,26 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
       <button id="closeSettings" style="font-size:20px">✕</button>
     </div>
     <div class="setting-group">
-      <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Colores</h3>
+      <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Colores de Velas</h3>
       <label>Velas alcistas <input type="color" id="setBullColor" value="#26a69a"></label>
       <label>Velas bajistas <input type="color" id="setBearColor" value="#ef5350"></label>
+    </div>
+    <div class="setting-group">
+      <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Colores de Indicadores</h3>
       <label>Kalman <input type="color" id="setKalmanColor" value="#00bcd4"></label>
       <label>VWAP <input type="color" id="setVwapColor" value="#ff9800"></label>
+      <label>EMA 9 <input type="color" id="setEma9Color" value="#e91e63"></label>
+      <label>EMA 21 <input type="color" id="setEma21Color" value="#9c27b0"></label>
+      <label>EMA 50 <input type="color" id="setEma50Color" value="#2196f3"></label>
+      <label>EMA 200 <input type="color" id="setEma200Color" value="#4caf50"></label>
+      <label>Bollinger Bands <input type="color" id="setBBColor" value="#9c27b0"></label>
+    </div>
+    <div class="setting-group">
+      <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Señales y Niveles</h3>
+      <label>Color Entry <input type="color" id="setEntryColor" value="#2962ff"></label>
+      <label>Color Stop Loss <input type="color" id="setSLColor" value="#ef5350"></label>
+      <label>Color Take Profit <input type="color" id="setTPColor" value="#26a69a"></label>
+      <label>Tamaño texto señales <select id="setSignalSize"><option value="10">Pequeño</option><option value="12" selected>Normal</option><option value="14">Grande</option><option value="16">Muy Grande</option></select></label>
     </div>
     <div class="setting-group">
       <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Opacidad</h3>
@@ -275,6 +290,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
       <label>Zona horaria <select id="setTimezone"><option value="America/New_York" selected>NYSE (ET)</option><option value="America/Chicago">Chicago (CT)</option><option value="America/Lima">Lima (PET)</option><option value="UTC">UTC</option></select></label>
       <label>Auto-actualización (seg) <input type="number" id="setRefreshInterval" value="60" min="10" max="300" style="width:60px"></label>
     </div>
+    <button id="applySettings" style="background:var(--cyan);color:#fff;padding:8px 16px;border-radius:4px;width:100%;margin-top:4px;font-weight:600">Aplicar Cambios</button>
     <button id="resetSettings" style="background:var(--red);color:#fff;padding:8px 16px;border-radius:4px;width:100%;margin-top:8px">Restaurar valores por defecto</button>
   </div>
 </div>
@@ -593,19 +609,19 @@ function renderChart() {
 }
 
 function renderOverlays() {
-  // Remove existing overlays
   Object.values(overlaySeries).forEach(s => { try { mainChart.removeSeries(s); } catch(e) {} });
   overlaySeries = {};
   if (!chartData || !chartData.bars) return;
   const bars = chartData.bars;
+  const c = getColors();
 
   const overlayConfig = {
-    kalman: { key: 'NAU_Kalman', color: '#00bcd4', width: 2 },
-    vwap: { key: 'VWAP', color: '#ff9800', width: 1 },
-    ema9: { key: 'EMA_9', color: '#e91e63', width: 1 },
-    ema21: { key: 'EMA_21', color: '#9c27b0', width: 1 },
-    ema50: { key: 'EMA_50', color: '#2196f3', width: 1 },
-    ema200: { key: 'EMA_200', color: '#4caf50', width: 2 },
+    kalman: { key: 'NAU_Kalman', color: c.kalman, width: 2 },
+    vwap: { key: 'VWAP', color: c.vwap, width: 1 },
+    ema9: { key: 'EMA_9', color: c.ema9, width: 1 },
+    ema21: { key: 'EMA_21', color: c.ema21, width: 1 },
+    ema50: { key: 'EMA_50', color: c.ema50, width: 1 },
+    ema200: { key: 'EMA_200', color: c.ema200, width: 2 },
     sma20: { key: 'SMA_20', color: '#ffeb3b', width: 1 },
   };
 
@@ -623,25 +639,28 @@ function renderOverlays() {
   if (state.indicators.bb) {
     const upper = bars.filter(b => b.BB_upper).map(b => ({ time: b.time, value: b.BB_upper }));
     const lower = bars.filter(b => b.BB_lower).map(b => ({ time: b.time, value: b.BB_lower }));
+    const bbCol = c.bb + '80';
     if (upper.length > 0) {
-      overlaySeries.bb_upper = mainChart.addLineSeries({ color: 'rgba(156,39,176,0.5)', lineWidth: 1, priceScaleId: 'right', lastValueVisible: false, priceLineVisible: false });
+      overlaySeries.bb_upper = mainChart.addLineSeries({ color: c.bb, lineWidth: 1, priceScaleId: 'right', lastValueVisible: false, priceLineVisible: false });
       overlaySeries.bb_upper.setData(upper);
-      overlaySeries.bb_lower = mainChart.addLineSeries({ color: 'rgba(156,39,176,0.5)', lineWidth: 1, priceScaleId: 'right', lastValueVisible: false, priceLineVisible: false });
+      overlaySeries.bb_lower = mainChart.addLineSeries({ color: c.bb, lineWidth: 1, priceScaleId: 'right', lastValueVisible: false, priceLineVisible: false });
       overlaySeries.bb_lower.setData(lower);
     }
   }
 }
 
 function renderSLTP() {
+  // Remove old price lines by recreating the series data (lightweight-charts limitation)
   if (!chartData || !chartData.sl_tp) return;
   const sltp = chartData.sl_tp;
-  // Remove old price lines
+  const c = getColors();
+  const sz = c.signalSize;
   try {
-    mainSeries.createPriceLine({ price: sltp.entry, color: '#2962ff', lineWidth: 1, lineStyle: 0, axisLabelVisible: true, title: `Entry ${sltp.entry.toFixed(2)}` });
-    mainSeries.createPriceLine({ price: sltp.sl, color: '#ef5350', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `SL ${sltp.sl.toFixed(2)}` });
-    mainSeries.createPriceLine({ price: sltp.tp1, color: '#26a69a', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `TP1 ${sltp.tp1.toFixed(2)}` });
-    mainSeries.createPriceLine({ price: sltp.tp2, color: '#26a69a', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `TP2 ${sltp.tp2.toFixed(2)}` });
-    mainSeries.createPriceLine({ price: sltp.tp3, color: '#00bcd4', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `TP3 ${sltp.tp3.toFixed(2)}` });
+    mainSeries.createPriceLine({ price: sltp.entry, color: c.entry, lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: `▶ ENTRY $${sltp.entry.toFixed(2)}` });
+    mainSeries.createPriceLine({ price: sltp.sl, color: c.sl, lineWidth: 2, lineStyle: 2, axisLabelVisible: true, title: `✖ SL $${sltp.sl.toFixed(2)}` });
+    mainSeries.createPriceLine({ price: sltp.tp1, color: c.tp, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `✓ TP1 $${sltp.tp1.toFixed(2)}` });
+    mainSeries.createPriceLine({ price: sltp.tp2, color: c.tp, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `✓ TP2 $${sltp.tp2.toFixed(2)}` });
+    mainSeries.createPriceLine({ price: sltp.tp3, color: '#00bcd4', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `✓ TP3 $${sltp.tp3.toFixed(2)}` });
   } catch(e) {}
 }
 
@@ -658,15 +677,24 @@ function computeHeikinAshi(bars) {
 }
 
 // ═══ LOAD CHART DATA ═══
+let hasLoadedOnce = false;
+let currentLoadingSymbol = null;
+
 async function loadChart(retries = 2) {
   const overlay = document.getElementById('loadingOverlay');
-  overlay.classList.remove('hidden');
-  overlay.textContent = 'Cargando datos...';
+  const isNewSymbol = currentLoadingSymbol !== state.symbol;
+  currentLoadingSymbol = state.symbol;
+
+  // Only show overlay on first load or new symbol
+  if (!hasLoadedOnce || isNewSymbol) {
+    overlay.classList.remove('hidden');
+    overlay.textContent = 'Cargando datos...';
+  }
   searchInput.value = state.symbol;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      if (attempt > 0) overlay.textContent = `Reintentando... (${attempt + 1})`;
+      if (attempt > 0 && !hasLoadedOnce) overlay.textContent = `Reintentando... (${attempt + 1})`;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120000);
       const url = `${API_BASE}/api/chart?symbol=${state.symbol}&interval=${state.interval}&prepost=true`;
@@ -675,7 +703,23 @@ async function loadChart(retries = 2) {
       const data = await resp.json();
       if (data.error) { overlay.textContent = data.error; overlay.classList.remove('hidden'); return; }
       chartData = data;
+
+      // Apply candle colors from settings
+      const colors = getColors();
+      mainSeries.applyOptions({ upColor: colors.bull, downColor: colors.bear, borderUpColor: colors.bull, borderDownColor: colors.bear, wickUpColor: colors.bull, wickDownColor: colors.bear });
+
       renderChart();
+
+      // On NEW symbol: zoom to last ~250 bars (approx 1 year daily)
+      if (isNewSymbol && chartData.bars.length > 50) {
+        const barsToShow = Math.min(250, chartData.bars.length);
+        mainChart.timeScale().setVisibleLogicalRange({
+          from: chartData.bars.length - barsToShow,
+          to: chartData.bars.length + 10,
+        });
+      }
+
+      hasLoadedOnce = true;
       return;
     } catch(e) {
       if (attempt === retries) {
@@ -755,22 +799,76 @@ document.getElementById('runScanBtn').onclick = async () => {
 };
 
 // ═══ SETTINGS ═══
-document.getElementById('settingsBtn').onclick = () => document.getElementById('settingsModal').classList.add('show');
+document.getElementById('settingsBtn').onclick = () => { loadSettingsUI(); document.getElementById('settingsModal').classList.add('show'); };
 document.getElementById('closeSettings').onclick = () => document.getElementById('settingsModal').classList.remove('show');
 document.getElementById('settingsModal').onclick = (e) => { if (e.target.id === 'settingsModal') e.target.classList.remove('show'); };
 
-document.getElementById('setCandleOpacity').oninput = (e) => {
-  document.getElementById('candleOpVal').textContent = e.target.value + '%';
-};
-document.getElementById('setLineOpacity').oninput = (e) => {
-  document.getElementById('lineOpVal').textContent = e.target.value + '%';
-};
-document.getElementById('setLabelOpacity').oninput = (e) => {
-  document.getElementById('labelOpVal').textContent = e.target.value + '%';
+function getColors() {
+  const s = state.settings;
+  return {
+    bull: s.bullColor || '#26a69a', bear: s.bearColor || '#ef5350',
+    kalman: s.kalmanColor || '#00bcd4', vwap: s.vwapColor || '#ff9800',
+    ema9: s.ema9Color || '#e91e63', ema21: s.ema21Color || '#9c27b0',
+    ema50: s.ema50Color || '#2196f3', ema200: s.ema200Color || '#4caf50',
+    bb: s.bbColor || '#9c27b0',
+    entry: s.entryColor || '#2962ff', sl: s.slColor || '#ef5350', tp: s.tpColor || '#26a69a',
+    signalSize: parseInt(s.signalSize) || 12,
+  };
+}
+
+function loadSettingsUI() {
+  const c = getColors();
+  document.getElementById('setBullColor').value = c.bull;
+  document.getElementById('setBearColor').value = c.bear;
+  document.getElementById('setKalmanColor').value = c.kalman;
+  document.getElementById('setVwapColor').value = c.vwap;
+  document.getElementById('setEma9Color').value = c.ema9;
+  document.getElementById('setEma21Color').value = c.ema21;
+  document.getElementById('setEma50Color').value = c.ema50;
+  document.getElementById('setEma200Color').value = c.ema200;
+  document.getElementById('setBBColor').value = c.bb;
+  document.getElementById('setEntryColor').value = c.entry;
+  document.getElementById('setSLColor').value = c.sl;
+  document.getElementById('setTPColor').value = c.tp;
+  document.getElementById('setSignalSize').value = String(c.signalSize);
+}
+
+document.getElementById('applySettings').onclick = () => {
+  state.settings.bullColor = document.getElementById('setBullColor').value;
+  state.settings.bearColor = document.getElementById('setBearColor').value;
+  state.settings.kalmanColor = document.getElementById('setKalmanColor').value;
+  state.settings.vwapColor = document.getElementById('setVwapColor').value;
+  state.settings.ema9Color = document.getElementById('setEma9Color').value;
+  state.settings.ema21Color = document.getElementById('setEma21Color').value;
+  state.settings.ema50Color = document.getElementById('setEma50Color').value;
+  state.settings.ema200Color = document.getElementById('setEma200Color').value;
+  state.settings.bbColor = document.getElementById('setBBColor').value;
+  state.settings.entryColor = document.getElementById('setEntryColor').value;
+  state.settings.slColor = document.getElementById('setSLColor').value;
+  state.settings.tpColor = document.getElementById('setTPColor').value;
+  state.settings.signalSize = document.getElementById('setSignalSize').value;
+  localStorage.setItem('nau_settings', JSON.stringify(state.settings));
+  // Apply to chart
+  const c = getColors();
+  mainSeries.applyOptions({ upColor: c.bull, downColor: c.bear, borderUpColor: c.bull, borderDownColor: c.bear, wickUpColor: c.bull, wickDownColor: c.bear });
+  if (chartData) { renderOverlays(); renderSLTP(); renderChart(); }
+  document.getElementById('settingsModal').classList.remove('show');
 };
 
+document.getElementById('resetSettings').onclick = () => {
+  state.settings = {};
+  localStorage.removeItem('nau_settings');
+  loadSettingsUI();
+  mainSeries.applyOptions({ upColor:'#26a69a',downColor:'#ef5350',borderUpColor:'#26a69a',borderDownColor:'#ef5350',wickUpColor:'#26a69a',wickDownColor:'#ef5350' });
+  if (chartData) renderChart();
+};
+
+document.getElementById('setCandleOpacity').oninput = (e) => { document.getElementById('candleOpVal').textContent = e.target.value + '%'; };
+document.getElementById('setLineOpacity').oninput = (e) => { document.getElementById('lineOpVal').textContent = e.target.value + '%'; };
+document.getElementById('setLabelOpacity').oninput = (e) => { document.getElementById('labelOpVal').textContent = e.target.value + '%'; };
+
 // ═══ CANDLE TYPE CHANGE ═══
-document.getElementById('candleSelect').onchange = () => { if (chartData) renderChart(); };
+document.getElementById('candleSelect').onchange = () => { currentLoadingSymbol = null; if (chartData) renderChart(); };
 
 // ═══ DRAWING TOOLS (basic) ═══
 document.getElementById('lineToolBtn').onclick = () => {
