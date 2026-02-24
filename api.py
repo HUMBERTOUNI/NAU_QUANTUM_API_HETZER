@@ -316,18 +316,23 @@ def download_and_compute(sym, interval, prepost=False):
                            "signal_score":round(float(row["NAU_Signal"]),1),
                            "label":signal_label(row["NAU_Signal"], row["NAU_Confidence"])})
 
-    # SL/TP
+    # SL/TP — only for CURRENT signal (last 5 bars), not historical
     sl_tp = None
-    if signals:
+    current_label = signal_label(sig_val, conf_val)
+    if current_label not in ("NEUTRAL",) and signals:
         ls = signals[-1]
-        atr = np.mean([bars[i]["high"]-bars[i]["low"] for i in range(max(0,len(bars)-14),len(bars))])
-        e = ls["price"]
-        if ls["type"] == "LONG":
-            sl_tp = {"type":"LONG","entry":e,"sl":round(e-1.5*atr,4),
-                     "tp1":round(e+2*atr,4),"tp2":round(e+3*atr,4),"tp3":round(e+4.5*atr,4),"atr":round(atr,4)}
-        else:
-            sl_tp = {"type":"SHORT","entry":e,"sl":round(e+1.5*atr,4),
-                     "tp1":round(e-2*atr,4),"tp2":round(e-3*atr,4),"tp3":round(e-4.5*atr,4),"atr":round(atr,4)}
+        last_bar_time = bars[-1]["time"] if bars else 0
+        # Only show SL/TP if the last signal is recent (within last 5 bars)
+        bar_times = [b["time"] for b in bars[-6:]] if len(bars) >= 6 else [b["time"] for b in bars]
+        if ls["time"] in bar_times or ls["time"] >= bar_times[0]:
+            atr = np.mean([bars[i]["high"]-bars[i]["low"] for i in range(max(0,len(bars)-14),len(bars))])
+            e = bars[-1]["close"]  # Use CURRENT price as entry, not historical signal price
+            if current_label in ("COMPRA FUERTE", "COMPRA"):
+                sl_tp = {"type":"LONG","entry":round(e,4),"sl":round(e-1.5*atr,4),
+                         "tp1":round(e+2*atr,4),"tp2":round(e+3*atr,4),"tp3":round(e+4.5*atr,4),"atr":round(atr,4)}
+            elif current_label in ("VENTA FUERTE", "VENTA"):
+                sl_tp = {"type":"SHORT","entry":round(e,4),"sl":round(e+1.5*atr,4),
+                         "tp1":round(e-2*atr,4),"tp2":round(e-3*atr,4),"tp3":round(e-4.5*atr,4),"atr":round(atr,4)}
 
     last = df.iloc[-1]
     sig_val = float(last["NAU_Signal"])
@@ -382,7 +387,7 @@ def scan_stocks(interval:str=Query("1d"), min_confidence:float=Query(60)):
             data = download_and_compute(sym, interval, False)
             if "error" in data: continue
             s = data["summary"]
-            if s["confidence"] >= min_confidence and abs(s["signal"]) > 15:
+            if s["confidence"] >= min_confidence and abs(s["signal"]) > 20 and s.get("label","NEUTRAL") != "NEUTRAL":
                 entry_info = data.get("sl_tp") or {}
                 # Build reasoning
                 factors = data.get("factors", {})
