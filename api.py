@@ -318,6 +318,9 @@ def download_and_compute(sym, interval, prepost=False):
 
     # SL/TP — only for CURRENT signal (last 5 bars), not historical
     sl_tp = None
+    last = df.iloc[-1]
+    sig_val = float(last["NAU_Signal"])
+    conf_val = float(last["NAU_Confidence"])
     current_label = signal_label(sig_val, conf_val)
     if current_label not in ("NEUTRAL",) and signals:
         ls = signals[-1]
@@ -334,9 +337,6 @@ def download_and_compute(sym, interval, prepost=False):
                 sl_tp = {"type":"SHORT","entry":round(e,4),"sl":round(e+1.5*atr,4),
                          "tp1":round(e-2*atr,4),"tp2":round(e-3*atr,4),"tp3":round(e-4.5*atr,4),"atr":round(atr,4)}
 
-    last = df.iloc[-1]
-    sig_val = float(last["NAU_Signal"])
-    conf_val = float(last["NAU_Confidence"])
     factors_dict = {}
     for col in factor_cols:
         if col in df.columns and pd.notna(last.get(col)):
