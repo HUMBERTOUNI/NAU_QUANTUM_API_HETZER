@@ -152,7 +152,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 
 <!-- ═══ TOP BAR ═══ -->
 <div id="topBar">
-  <div id="logo">SENTINEL QUANTUM EDGE<span>v5.0</span></div>
+  <div id="logo">SENTINEL QUANTUM EDGE<span>v5.1</span></div>
   <div id="searchWrap">
     <span id="searchIcon">🔍</span>
     <input id="searchInput" type="text" placeholder="Buscar acción, índice, crypto..." autocomplete="off">
@@ -228,19 +228,34 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 <div id="scannerModal">
   <div id="scannerContent">
     <div id="scannerHeader">
-      <h2>📡 Scanner de Mercado</h2>
-      <div style="display:flex;align-items:center;gap:8px">
-        <label style="font-size:12px;color:var(--text2)">Confianza mín:</label>
-        <input id="scanConfInput" type="number" value="60" min="30" max="95" step="5" style="width:60px">
-        <button id="runScanBtn" style="background:var(--blue);color:#fff;padding:6px 16px;border-radius:4px;font-weight:600">Escanear</button>
+      <h2>📡 Scanner PRO — 200+ Activos</h2>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <select id="scanIndexFilter" style="padding:4px 8px;border-radius:4px;background:var(--bg3);border:1px solid var(--bg4);color:var(--text);font-size:12px">
+          <option value="ALL">📊 TODOS (200+)</option>
+          <option value="NASDAQ100">NASDAQ 100</option>
+          <option value="S&P500">S&P 500</option>
+          <option value="DOW30">DOW JONES 30</option>
+          <option value="RUSSELL2000">RUSSELL 2000</option>
+          <option value="ETF">ETFs</option>
+          <option value="CRYPTO">CRYPTO</option>
+          <option value="INDEX">ÍNDICES</option>
+          <option value="COMM/FX">COMM / FOREX</option>
+        </select>
+        <label style="font-size:12px;color:var(--text2)">Conf mín:</label>
+        <input id="scanConfInput" type="number" value="55" min="30" max="95" step="5" style="width:55px">
+        <button id="runScanBtn" style="background:var(--blue);color:#fff;padding:6px 16px;border-radius:4px;font-weight:600">🔍 Escanear</button>
         <button id="closeScanBtn" style="font-size:20px;padding:0 8px">✕</button>
       </div>
     </div>
     <div id="scannerBody">
-      <div id="scannerLoading" style="display:none">Escaneando mercado... esto puede tomar 30-60 segundos</div>
+      <div id="scannerLoading" style="display:none">
+        <div style="font-size:14px;margin-bottom:8px">📡 Escaneando mercado con IA...</div>
+        <div style="color:var(--text3)">Analizando 200+ activos con 18 factores de confluencia</div>
+        <div style="color:var(--text3);margin-top:4px">NASDAQ100 · S&P500 · DOW30 · RUSSELL2000 · ETFs · Crypto</div>
+      </div>
       <table id="scannerTable">
         <thead><tr>
-          <th>Símbolo</th><th>Señal</th><th>Dirección</th><th>Precio</th>
+          <th>Símbolo</th><th>Índice</th><th>Señal</th><th>Dir.</th><th>Precio</th>
           <th>Entrada</th><th>SL</th><th>TP1</th><th>TP2</th><th>Conf%</th><th>Sustento</th>
         </tr></thead>
         <tbody id="scannerTbody"></tbody>
@@ -274,10 +289,13 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
     </div>
     <div class="setting-group">
       <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Señales y Niveles</h3>
+      <label>Color señal COMPRA ↑ <input type="color" id="setSignalBuyColor" value="#26a69a"></label>
+      <label>Color señal VENTA ↓ <input type="color" id="setSignalSellColor" value="#ef5350"></label>
       <label>Color Entry <input type="color" id="setEntryColor" value="#2962ff"></label>
       <label>Color Stop Loss <input type="color" id="setSLColor" value="#ef5350"></label>
       <label>Color Take Profit <input type="color" id="setTPColor" value="#26a69a"></label>
       <label>Tamaño texto señales <select id="setSignalSize"><option value="10">Pequeño</option><option value="12" selected>Normal</option><option value="14">Grande</option><option value="16">Muy Grande</option></select></label>
+      <label>Grosor líneas indicadores <select id="setLineWidth"><option value="1" selected>Fino</option><option value="2">Normal</option><option value="3">Grueso</option></select></label>
     </div>
     <div class="setting-group">
       <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Opacidad</h3>
@@ -542,18 +560,21 @@ function renderChart() {
     color: b.NAU_Signal > 20 ? '#26a69a' : b.NAU_Signal < -20 ? '#ef5350' : '#787b86'
   })));
 
-  // Signals markers
+  // Signals markers with custom colors
   if (state.indicators.signals && chartData.signals) {
+    const c = getColors();
     const markers = [];
     let lastTime = 0;
+    const minGap = state.interval === '1d' ? 86400*2 : state.interval === '1wk' ? 86400*7 : 3600*2;
     chartData.signals.forEach(s => {
-      if (s.time - lastTime < 86400 * 2) return;
+      if (s.time - lastTime < minGap) return;
       lastTime = s.time;
+      const isLong = s.type === 'LONG';
       markers.push({
         time: s.time,
-        position: s.type === 'LONG' ? 'belowBar' : 'aboveBar',
-        color: s.type === 'LONG' ? '#26a69a' : '#ef5350',
-        shape: s.type === 'LONG' ? 'arrowUp' : 'arrowDown',
+        position: isLong ? 'belowBar' : 'aboveBar',
+        color: isLong ? c.signalBuy : c.signalSell,
+        shape: isLong ? 'arrowUp' : 'arrowDown',
         text: `${s.label || s.type} ${s.confidence}%`,
       });
     });
@@ -615,14 +636,15 @@ function renderOverlays() {
   const bars = chartData.bars;
   const c = getColors();
 
+  const lw = c.lineWidth || 1;
   const overlayConfig = {
-    kalman: { key: 'NAU_Kalman', color: c.kalman, width: 2 },
-    vwap: { key: 'VWAP', color: c.vwap, width: 1 },
-    ema9: { key: 'EMA_9', color: c.ema9, width: 1 },
-    ema21: { key: 'EMA_21', color: c.ema21, width: 1 },
-    ema50: { key: 'EMA_50', color: c.ema50, width: 1 },
-    ema200: { key: 'EMA_200', color: c.ema200, width: 2 },
-    sma20: { key: 'SMA_20', color: '#ffeb3b', width: 1 },
+    kalman: { key: 'NAU_Kalman', color: c.kalman, width: lw + 1 },
+    vwap: { key: 'VWAP', color: c.vwap, width: lw },
+    ema9: { key: 'EMA_9', color: c.ema9, width: lw },
+    ema21: { key: 'EMA_21', color: c.ema21, width: lw },
+    ema50: { key: 'EMA_50', color: c.ema50, width: lw },
+    ema200: { key: 'EMA_200', color: c.ema200, width: lw + 1 },
+    sma20: { key: 'SMA_20', color: '#ffeb3b', width: lw },
   };
 
   for (const [ind, cfg] of Object.entries(overlayConfig)) {
@@ -754,13 +776,15 @@ document.getElementById('runScanBtn').onclick = async () => {
   const loading = document.getElementById('scannerLoading');
   const tbody = document.getElementById('scannerTbody');
   const info = document.getElementById('scanInfo');
+  const indexFilter = document.getElementById('scanIndexFilter').value;
   loading.style.display = 'block';
+  loading.textContent = `Escaneando ${indexFilter === 'ALL' ? '200+ activos' : indexFilter}... esto puede tomar 1-3 minutos`;
   tbody.innerHTML = '';
   info.textContent = 'Escaneando...';
 
   try {
     const conf = document.getElementById('scanConfInput').value;
-    const resp = await fetch(`${API_BASE}/api/scan?interval=${state.interval}&min_confidence=${conf}`);
+    const resp = await fetch(`${API_BASE}/api/scan?interval=${state.interval}&min_confidence=${conf}&index=${indexFilter}`);
     const data = await resp.json();
     loading.style.display = 'none';
 
@@ -768,19 +792,19 @@ document.getElementById('runScanBtn').onclick = async () => {
       tbody.innerHTML = data.scan_results.map(r => {
         const cls = r.direction === 'LONG' ? 'long' : 'short';
         return `<tr style="cursor:pointer" data-sym="${r.symbol}">
-          <td><b>${r.symbol}</b><br><span style="color:var(--text3);font-size:10px">${r.sector}</span></td>
+          <td><b>${r.symbol}</b></td>
+          <td style="font-size:10px;color:var(--text2)">${r.index || ''}</td>
           <td class="${cls}"><b>${r.label}</b></td>
           <td class="${cls}">${r.direction}</td>
           <td>$${r.price?.toFixed(2)}</td>
-          <td>$${r.entry?.toFixed(2)}</td>
+          <td><b>$${r.entry?.toFixed(2)}</b></td>
           <td style="color:var(--red)">$${r.sl?.toFixed(2)}</td>
           <td style="color:var(--green)">$${r.tp1?.toFixed(2)}</td>
           <td style="color:var(--green)">$${r.tp2?.toFixed(2)}</td>
           <td><b>${r.confidence?.toFixed(0)}%</b></td>
-          <td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${r.reasoning}</td>
+          <td style="font-size:10px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.reasoning}">${r.reasoning}</td>
         </tr>`;
       }).join('');
-      // Click to load symbol
       tbody.querySelectorAll('tr').forEach(tr => {
         tr.onclick = () => {
           state.symbol = tr.dataset.sym;
@@ -790,11 +814,11 @@ document.getElementById('runScanBtn').onclick = async () => {
           loadChart();
         };
       });
-      info.textContent = `${data.scan_results.length} resultados de ${data.total_scanned} activos escaneados`;
+      info.textContent = `${data.total_found} señales de ${data.total_scanned} activos | ${data.scan_time}s | TF: ${state.interval} | Filtro: ${indexFilter}`;
     }
   } catch(e) {
     loading.style.display = 'none';
-    info.textContent = 'Error al escanear: ' + e.message;
+    info.textContent = 'Error: ' + e.message;
   }
 };
 
@@ -812,7 +836,9 @@ function getColors() {
     ema50: s.ema50Color || '#2196f3', ema200: s.ema200Color || '#4caf50',
     bb: s.bbColor || '#9c27b0',
     entry: s.entryColor || '#2962ff', sl: s.slColor || '#ef5350', tp: s.tpColor || '#26a69a',
+    signalBuy: s.signalBuyColor || '#26a69a', signalSell: s.signalSellColor || '#ef5350',
     signalSize: parseInt(s.signalSize) || 12,
+    lineWidth: parseInt(s.lineWidth) || 1,
   };
 }
 
@@ -830,7 +856,10 @@ function loadSettingsUI() {
   document.getElementById('setEntryColor').value = c.entry;
   document.getElementById('setSLColor').value = c.sl;
   document.getElementById('setTPColor').value = c.tp;
+  document.getElementById('setSignalBuyColor').value = c.signalBuy;
+  document.getElementById('setSignalSellColor').value = c.signalSell;
   document.getElementById('setSignalSize').value = String(c.signalSize);
+  document.getElementById('setLineWidth').value = String(c.lineWidth);
 }
 
 document.getElementById('applySettings').onclick = () => {
@@ -846,12 +875,14 @@ document.getElementById('applySettings').onclick = () => {
   state.settings.entryColor = document.getElementById('setEntryColor').value;
   state.settings.slColor = document.getElementById('setSLColor').value;
   state.settings.tpColor = document.getElementById('setTPColor').value;
+  state.settings.signalBuyColor = document.getElementById('setSignalBuyColor').value;
+  state.settings.signalSellColor = document.getElementById('setSignalSellColor').value;
   state.settings.signalSize = document.getElementById('setSignalSize').value;
+  state.settings.lineWidth = document.getElementById('setLineWidth').value;
   localStorage.setItem('nau_settings', JSON.stringify(state.settings));
-  // Apply to chart
   const c = getColors();
   mainSeries.applyOptions({ upColor: c.bull, downColor: c.bear, borderUpColor: c.bull, borderDownColor: c.bear, wickUpColor: c.bull, wickDownColor: c.bear });
-  if (chartData) { renderOverlays(); renderSLTP(); renderChart(); }
+  if (chartData) renderChart();
   document.getElementById('settingsModal').classList.remove('show');
 };
 
@@ -907,7 +938,7 @@ loadChart();
 renderWatchlist();
 startAutoRefresh();
 
-console.log(`Sentinel Quantum Edge v5.0 — API: ${API_BASE}`);
+console.log(`Sentinel Quantum Edge v5.1 — API: ${API_BASE} — Scanner PRO: 200+ activos`);
 
 // ═══ PWA SERVICE WORKER ═══
 if ('serviceWorker' in navigator) {
