@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY api.py .
 COPY nau_quantum_engine.py .
+COPY stock_universe.py .
 COPY start.sh .
 RUN chmod +x start.sh
 
