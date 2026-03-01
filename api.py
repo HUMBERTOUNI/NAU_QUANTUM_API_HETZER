@@ -84,25 +84,40 @@ CRYPTO = [
 INDICES_LIST = ["^GSPC","^DJI","^IXIC","^RUT","^VIX"]
 COMM_FX = ["GC=F","SI=F","CL=F","NG=F","EURUSD=X","GBPUSD=X","USDJPY=X"]
 
+# ── Index MEMBERSHIP sets (a stock can belong to multiple indices) ──
+# The FULL S&P 500 includes most NASDAQ100 stocks + SP500_EXTRA
+SP500_FULL = list(set(NASDAQ_100 + SP500_EXTRA))  # ~180 of the top S&P 500
+DOW30_SET = set(DOW_30)
+
+INDEX_MEMBERSHIP = {}  # symbol -> set of index names
+for s in NASDAQ_100: INDEX_MEMBERSHIP.setdefault(s, set()).add("NASDAQ100")
+for s in SP500_FULL: INDEX_MEMBERSHIP.setdefault(s, set()).add("S&P500")
+for s in DOW_30: INDEX_MEMBERSHIP.setdefault(s, set()).add("DOW30")
+for s in RUSSELL_2000_TOP: INDEX_MEMBERSHIP.setdefault(s, set()).add("RUSSELL2000")
+for s in ETFS: INDEX_MEMBERSHIP.setdefault(s, set()).add("ETF")
+for s in CRYPTO: INDEX_MEMBERSHIP.setdefault(s, set()).add("CRYPTO")
+for s in INDICES_LIST: INDEX_MEMBERSHIP.setdefault(s, set()).add("INDEX")
+for s in COMM_FX: INDEX_MEMBERSHIP.setdefault(s, set()).add("COMM/FX")
+
 def build_scan_universe():
+    """Build deduplicated scan list. Each stock has ALL its index memberships."""
     seen = set()
     universe = []
-    def add(syms, idx):
-        for s in syms:
-            if s not in seen:
-                seen.add(s)
-                universe.append({"s": s, "idx": idx})
-    add(NASDAQ_100, "NASDAQ100")
-    add(SP500_EXTRA, "S&P500")
-    add(DOW_30, "DOW30")
-    add(RUSSELL_2000_TOP, "RUSSELL2000")
-    add(ETFS, "ETF")
-    add(CRYPTO, "CRYPTO")
-    add(INDICES_LIST, "INDEX")
-    add(COMM_FX, "COMM/FX")
+    all_syms = NASDAQ_100 + SP500_EXTRA + DOW_30 + RUSSELL_2000_TOP + ETFS + CRYPTO + INDICES_LIST + COMM_FX
+    for s in all_syms:
+        if s not in seen:
+            seen.add(s)
+            indices = INDEX_MEMBERSHIP.get(s, {"OTHER"})
+            universe.append({"s": s, "idx": " · ".join(sorted(indices))})
     return universe
 
 SCAN_UNIVERSE = build_scan_universe()
+
+def filter_universe(index_filter):
+    """Filter universe by index membership (not just primary tag)."""
+    if index_filter == "ALL":
+        return SCAN_UNIVERSE
+    return [u for u in SCAN_UNIVERSE if index_filter in INDEX_MEMBERSHIP.get(u["s"], set())]
 
 # Symbol DB for search
 SYMBOLS_DB = [
@@ -369,7 +384,8 @@ def download_and_compute(sym, interval, prepost=False):
 # ══════════════════════════════════════════════════
 
 def scan_one(sym_info, interval, min_conf):
-    sym, idx_name = sym_info["s"], sym_info["idx"]
+    sym = sym_info["s"]
+    idx_label = " · ".join(sorted(INDEX_MEMBERSHIP.get(sym, {"OTHER"})))
     try:
         data = download_and_compute(sym, interval, False)
         if "error" in data: return None
@@ -380,7 +396,7 @@ def scan_one(sym_info, interval, min_conf):
         f = data.get("factors", {})
         top5 = sorted(f.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
         reasoning = f"{s['label']} | {s['regime_name']} | " + ", ".join(f"{k}:{v:+.0f}" for k,v in top5)
-        return {"symbol":sym,"index":idx_name,"signal":s["signal"],"confidence":s["confidence"],
+        return {"symbol":sym,"index":idx_label,"signal":s["signal"],"confidence":s["confidence"],
                 "regime":s["regime_name"],"label":s["label"],
                 "direction":"LONG" if s["signal"]>0 else "SHORT",
                 "price":s["last_price"],"entry":ei.get("entry",s["last_price"]),
@@ -391,7 +407,7 @@ def scan_one(sym_info, interval, min_conf):
 
 @app.get("/api/scan")
 def scan_stocks(interval:str=Query("1d"), min_confidence:float=Query(55), index:str=Query("ALL")):
-    universe = SCAN_UNIVERSE if index == "ALL" else [u for u in SCAN_UNIVERSE if u["idx"] == index]
+    universe = filter_universe(index)
     t0 = time.time()
     results = []
     with ThreadPoolExecutor(max_workers=10) as ex:
