@@ -152,7 +152,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 
 <!-- ═══ TOP BAR ═══ -->
 <div id="topBar">
-  <div id="logo">SENTINEL QUANTUM EDGE<span>v5.2</span></div>
+  <div id="logo">SENTINEL QUANTUM EDGE<span>v5.3</span></div>
   <div id="searchWrap">
     <span id="searchIcon">🔍</span>
     <input id="searchInput" type="text" placeholder="Buscar acción, índice, crypto..." autocomplete="off">
@@ -778,7 +778,8 @@ document.getElementById('runScanBtn').onclick = async () => {
   const info = document.getElementById('scanInfo');
   const indexFilter = document.getElementById('scanIndexFilter').value;
   loading.style.display = 'block';
-  loading.textContent = `Escaneando ${indexFilter === 'ALL' ? '200+ activos' : indexFilter}... esto puede tomar 1-3 minutos`;
+  const countMap = {'ALL':'725','S&P500':'493','NASDAQ100':'105','DOW30':'31','RUSSELL2000':'150','ETF':'36','CRYPTO':'12'};
+  loading.innerHTML = `<div style="font-size:14px;margin-bottom:8px">📡 Escaneando ${countMap[indexFilter]||''} activos de${indexFilter}...</div><div style="color:var(--text3)">Análisis 18 factores IA/ML — batch mode activo</div>`;
   tbody.innerHTML = '';
   info.textContent = 'Escaneando...';
 
