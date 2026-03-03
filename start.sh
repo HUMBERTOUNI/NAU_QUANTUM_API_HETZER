@@ -1,3 +1,8 @@
 #!/bin/bash
-# Sentinel Quantum Edge v5.0 - Hetzner
-exec uvicorn api:app --host 0.0.0.0 --port 9000 --workers 4 --timeout-keep-alive 120
+# Sentinel Quantum Edge v5.3 - Hetzner/Coolify
+exec uvicorn api:app \
+    --host 0.0.0.0 \
+    --port 9000 \
+    --workers 2 \
+    --timeout-keep-alive 300 \
+    --timeout-graceful-shutdown 300
