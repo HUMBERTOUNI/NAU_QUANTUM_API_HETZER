@@ -1,10 +1,9 @@
 """
-NAU Quantum v5.3 "Sentinel Quantum Edge" — FastAPI Backend
-Optimized for Hetzner CX43 (8 CPU, 16GB RAM)
-Scanner: 16 parallel workers, 725+ stocks
-Timeframes: 1m,5m,15m,30m,1h,2h,4h,1d,1wk,1mo,3mo,6mo,1y
+NAU Quantum v5.4 "Sentinel Quantum Edge" — FastAPI Backend
+FIXED SCANNER: scan_fast() downloads only 200 bars per stock (not 5 years)
+Peru timezone: UTC-5 applied to all timestamps
 """
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -19,13 +18,13 @@ from stock_universe import (
     SP500, NASDAQ_100, DOW_30, RUSSELL_2000_TOP
 )
 
-app = FastAPI(title="NAU Quantum v5.3 — Sentinel Quantum Edge")
+app = FastAPI(title="NAU Quantum v5.4 — Sentinel Quantum Edge")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# ── Cache optimized for CX43 ──
 CACHE = {}
-CACHE_TTL = 180  # 3 min cache for faster repeated access
-PREV_CLOSE_CACHE = {}  # symbol -> {close, time}
+CACHE_TTL = 180
+SCAN_CACHE = {}  # Separate cache for scan results
+PREV_CLOSE_CACHE = {}
 
 def cache_get(key):
     if key in CACHE and time.time() - CACHE[key][1] < CACHE_TTL:
@@ -35,7 +34,6 @@ def cache_get(key):
 def cache_set(key, data):
     CACHE[key] = (data, time.time())
 
-# Fix #2: Add 2h, 6mo, 1y timeframes
 INTERVAL_MAP = {
     "1m":{"yf":"1m","period":"7d","resample":None},
     "5m":{"yf":"5m","period":"60d","resample":None},
@@ -50,6 +48,13 @@ INTERVAL_MAP = {
     "3mo":{"yf":"3mo","period":"max","resample":None},
     "6mo":{"yf":"1mo","period":"max","resample":"6MS"},
     "1y":{"yf":"3mo","period":"max","resample":"YS"},
+}
+
+# SCAN uses SHORT periods for speed
+SCAN_PERIOD_MAP = {
+    "1m":"5d","5m":"30d","15m":"30d","30m":"30d",
+    "1h":"3mo","2h":"3mo","4h":"3mo",
+    "1d":"1y","1wk":"2y","1mo":"5y","3mo":"5y","6mo":"5y","1y":"10y",
 }
 
 indicator = NAUQuantumAlphaIndicator()
@@ -140,7 +145,6 @@ def safe_download(sym, period, interval, prepost=False):
     df = df.dropna(subset=['Open','High','Low','Close'])
     return df, None
 
-# Fix #8: Get previous day close for accurate % change
 def get_prev_close(sym):
     ck = f"pc:{sym}"
     if ck in PREV_CLOSE_CACHE and time.time() - PREV_CLOSE_CACHE[ck][1] < 3600:
@@ -156,6 +160,9 @@ def get_prev_close(sym):
         pass
     return 0
 
+# Peru timezone offset: UTC-5 = -18000 seconds
+PERU_OFFSET = -5 * 3600
+
 def download_and_compute(sym, interval, prepost=False):
     ck = f"{sym}:{interval}:{prepost}"
     cached = cache_get(ck)
@@ -168,8 +175,7 @@ def download_and_compute(sym, interval, prepost=False):
     if err: return {"error": f"Download failed for {sym}: {err}"}
     if df is None or df.empty: return {"error": f"No data for {sym}"}
     if config["resample"]:
-        rs = config["resample"]
-        df = df.resample(rs).agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+        df = df.resample(config["resample"]).agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
     if len(df) < 50: return {"error": f"Only {len(df)} bars for {sym} on {interval}. Need 50+."}
     t0 = time.time()
     try:
@@ -188,8 +194,8 @@ def download_and_compute(sym, interval, prepost=False):
                ["VWAP","EMA_9","EMA_21","EMA_50","EMA_200","SMA_20","BB_upper","BB_lower",
                 "RSI","MACD","MACD_signal","MACD_hist"]
     for idx, row in df.iterrows():
-        try: ts = int(idx.timestamp())
-        except: ts = int(pd.Timestamp(idx).timestamp())
+        try: ts = int(idx.timestamp()) + PERU_OFFSET
+        except: ts = int(pd.Timestamp(idx).timestamp()) + PERU_OFFSET
         bar = {"time":ts,"open":round(float(row["Open"]),4),"high":round(float(row["High"]),4),
                "low":round(float(row["Low"]),4),"close":round(float(row["Close"]),4),
                "volume":int(float(row["Volume"]))}
@@ -229,9 +235,7 @@ def download_and_compute(sym, interval, prepost=False):
         if col in df.columns and pd.notna(last.get(col)):
             factors_dict[col.replace("NAU_","").replace("_Score","")] = round(float(last[col]),1)
 
-    # Fix #8: Get previous day close
     prev_close = get_prev_close(sym)
-
     summary = {"symbol":sym,"interval":interval,"bars_count":len(bars),
         "signal":round(sig_val,1),"confidence":round(conf_val*100,1),
         "regime":int(last["NAU_Regime"]),
@@ -245,36 +249,108 @@ def download_and_compute(sym, interval, prepost=False):
     cache_set(ck, result)
     return result
 
-# ═══ PARALLEL SCANNER — ROBUST ═══
+
+# ══════════════════════════════════════════════════════════════
+# FAST SCANNER — downloads only what's needed, no full bar construction
+# ══════════════════════════════════════════════════════════════
+
+def scan_fast(sym, interval):
+    """Ultra-fast scan: download SHORT period, compute engine, return signal only."""
+    try:
+        # Determine yfinance params for scanning (SHORT periods)
+        yf_interval_map = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h",
+                           "2h":"1h","4h":"1h","1d":"1d","1wk":"1wk","1mo":"1mo",
+                           "3mo":"3mo","6mo":"1mo","1y":"3mo"}
+        yf_interval = yf_interval_map.get(interval, "1d")
+        scan_period = SCAN_PERIOD_MAP.get(interval, "1y")
+
+        df, err = safe_download(sym, scan_period, yf_interval, False)
+        if err or df is None or df.empty:
+            return None
+
+        # Resample if needed
+        resample_map = {"2h":"2h","4h":"4h","6mo":"6MS","1y":"YS"}
+        if interval in resample_map:
+            df = df.resample(resample_map[interval]).agg(
+                {"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+
+        if len(df) < 50:
+            return None
+
+        # Run the engine
+        df = indicator.compute(df)
+        last = df.iloc[-1]
+
+        sig_val = float(last["NAU_Signal"])
+        conf_val = float(last["NAU_Confidence"])
+        conf_pct = conf_val * 100 if conf_val <= 1 else conf_val
+        label = signal_label(sig_val, conf_pct)
+        price = float(last["Close"])
+        regime = {0:"BULL",1:"BEAR",2:"RANGE"}.get(int(last["NAU_Regime"]), "?")
+
+        # Calculate ATR for SL/TP
+        highs = df["High"].iloc[-14:].values.astype(float)
+        lows = df["Low"].iloc[-14:].values.astype(float)
+        atr = float(np.mean(highs - lows))
+
+        # Get top factors
+        factor_cols = ["NAU_Kalman_Score","NAU_Wavelet_Score","NAU_HMM_Score",
+                       "NAU_Hurst_Score","NAU_OrderFlow_Score","NAU_Attention_Score"]
+        factors = {}
+        for col in factor_cols:
+            if col in df.columns and pd.notna(last.get(col)):
+                factors[col.replace("NAU_","").replace("_Score","")] = round(float(last[col]),1)
+
+        return {
+            "signal": round(sig_val, 1),
+            "confidence": round(conf_pct, 1),
+            "label": label,
+            "price": round(price, 2),
+            "regime": regime,
+            "atr": atr,
+            "factors": factors,
+        }
+    except Exception:
+        return None
+
 
 def scan_one(sym_info, interval, min_conf):
-    """Scan one stock using the main download_and_compute. Never raises."""
+    """Scan one stock. Returns formatted result or None."""
     sym = sym_info["s"]
     try:
-        data = download_and_compute(sym, interval, False)
-        if not data or "error" in data:
+        result = scan_fast(sym, interval)
+        if result is None:
             return None
-        s = data.get("summary")
-        if not s:
-            return None
-        conf = s.get("confidence", 0)
-        sig = s.get("signal", 0)
-        label = s.get("label", "NEUTRAL")
+
+        conf = result["confidence"]
+        sig = result["signal"]
+        label = result["label"]
+
         if conf < min_conf or abs(sig) < 15 or label == "NEUTRAL":
             return None
+
+        price = result["price"]
+        atr = result["atr"]
         idx_label = " · ".join(sorted(INDEX_MEMBERSHIP.get(sym, {"OTHER"})))
-        ei = data.get("sl_tp") or {}
-        factors = data.get("factors", {})
+
+        if label in ("COMPRA FUERTE", "COMPRA"):
+            entry, sl = price, round(price - 1.5 * atr, 2)
+            tp1, tp2 = round(price + 2 * atr, 2), round(price + 3 * atr, 2)
+        else:
+            entry, sl = price, round(price + 1.5 * atr, 2)
+            tp1, tp2 = round(price - 2 * atr, 2), round(price - 3 * atr, 2)
+
+        factors = result.get("factors", {})
         top5 = sorted(factors.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
-        reasoning = f"{label} | {s.get('regime_name','?')} | " + ", ".join(f"{k}:{v:+.0f}" for k,v in top5)
+        reasoning = f"{label} | {result['regime']} | " + ", ".join(f"{k}:{v:+.0f}" for k, v in top5)
+
         return {
-            "symbol": sym, "index": idx_label, "signal": sig, "confidence": conf,
-            "regime": s.get("regime_name", "?"), "label": label,
+            "symbol": sym, "index": idx_label,
+            "signal": sig, "confidence": conf,
+            "regime": result["regime"], "label": label,
             "direction": "LONG" if sig > 0 else "SHORT",
-            "price": s.get("last_price", 0),
-            "entry": ei.get("entry", s.get("last_price", 0)),
-            "sl": ei.get("sl", 0), "tp1": ei.get("tp1", 0),
-            "tp2": ei.get("tp2", 0), "tp3": ei.get("tp3", 0),
+            "price": price, "entry": round(entry, 2),
+            "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": 0,
             "reasoning": reasoning,
             "score": round(abs(sig) * (conf / 100), 1),
         }
@@ -284,14 +360,16 @@ def scan_one(sym_info, interval, min_conf):
 
 @app.get("/api/scan")
 def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), index: str = Query("ALL")):
-    """Robust parallel scanner. Never crashes — always returns JSON."""
+    """Professional parallel scanner. Always returns valid JSON."""
     try:
         universe = filter_universe(index)
         if index == "ALL" and len(universe) > 500:
             universe = universe[:500]
+
         t0 = time.time()
         results = []
         errors = 0
+
         with ThreadPoolExecutor(max_workers=16) as executor:
             future_map = {executor.submit(scan_one, si, interval, min_confidence): si for si in universe}
             for future in as_completed(future_map):
@@ -301,41 +379,54 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
                         results.append(r)
                 except Exception:
                     errors += 1
+
         results.sort(key=lambda x: x.get("score", 0), reverse=True)
-        return {"scan_results": results[:50], "total_scanned": len(universe),
-                "total_found": len(results), "errors": errors,
-                "scan_time": round(time.time() - t0, 1), "interval": interval,
-                "index_filter": index, "timestamp": int(time.time())}
+        return {
+            "scan_results": results[:50],
+            "total_scanned": len(universe),
+            "total_found": len(results),
+            "errors": errors,
+            "scan_time": round(time.time() - t0, 1),
+            "interval": interval,
+            "index_filter": index,
+            "timestamp": int(time.time()),
+        }
     except Exception as e:
-        return {"scan_results": [], "total_scanned": 0, "total_found": 0,
-                "errors": 1, "scan_time": 0, "error": str(e),
-                "interval": interval, "index_filter": index, "timestamp": int(time.time())}
+        return {
+            "scan_results": [], "total_scanned": 0, "total_found": 0,
+            "errors": 1, "scan_time": 0, "error": str(e),
+            "interval": interval, "index_filter": index,
+            "timestamp": int(time.time()),
+        }
+
+
+# ═══ OTHER ENDPOINTS ═══
 
 @app.get("/api/chart")
-def get_chart(symbol:str=Query("AAPL"), interval:str=Query("1d"), prepost:bool=Query(False)):
-    try: return download_and_compute(symbol.upper().strip(), interval, prepost)
-    except Exception as e: return {"error":f"Server error: {str(e)}"}
+def get_chart(symbol: str = Query("AAPL"), interval: str = Query("1d"), prepost: bool = Query(False)):
+    try:
+        return download_and_compute(symbol.upper().strip(), interval, prepost)
+    except Exception as e:
+        return {"error": f"Server error: {str(e)}"}
 
-# Fix #7: Dynamic search — tries SYMBOLS_DB first, then yfinance for unknown tickers
 @app.get("/api/search")
-def search_symbols(q:str=Query("")):
-    if len(q) < 1: return {"results": SYMBOLS_DB[:20]}
+def search_symbols(q: str = Query("")):
+    if len(q) < 1:
+        return {"results": SYMBOLS_DB[:20]}
     ql = q.lower()
     local = [s for s in SYMBOLS_DB if ql in s["s"].lower() or ql in s["n"].lower()]
     if local:
         return {"results": local[:20]}
-    # Fallback: try yfinance for unknown tickers
     try:
         ticker = yf.Ticker(q.upper())
         info = ticker.fast_info
         if hasattr(info, 'last_price') and info.last_price:
-            name = q.upper()
             try:
                 full_info = ticker.info
                 name = full_info.get("shortName", q.upper())
                 sector = full_info.get("sector", "Unknown")
             except:
-                sector = "Unknown"
+                name, sector = q.upper(), "Unknown"
             return {"results": [{"s": q.upper(), "n": name, "sec": sector}]}
     except:
         pass
@@ -343,15 +434,17 @@ def search_symbols(q:str=Query("")):
 
 @app.get("/api/health")
 def health():
-    return {"status":"ok","version":"5.3","engine":"Sentinel Quantum Edge 18-Factor AI/ML",
-            "scan_universe":len(SCAN_UNIVERSE),"cache":len(CACHE),
-            "indices":{"SP500":len(set(SP500)),"NASDAQ100":len(set(NASDAQ_100)),
-                       "DOW30":len(set(DOW_30)),"RUSSELL2000":len(set(RUSSELL_2000_TOP))}}
+    return {"status": "ok", "version": "5.4", "engine": "Sentinel Quantum Edge 18-Factor AI/ML",
+            "scan_universe": len(SCAN_UNIVERSE), "cache": len(CACHE),
+            "timezone": "America/Lima (UTC-5)",
+            "indices": {"SP500": len(set(SP500)), "NASDAQ100": len(set(NASDAQ_100)),
+                        "DOW30": len(set(DOW_30)), "RUSSELL2000": len(set(RUSSELL_2000_TOP))}}
 
 @app.get("/")
 def root():
-    if os.path.exists("/app/static/index.html"): return FileResponse("/app/static/index.html")
-    return {"message":"NAU Quantum v5.3","docs":"/docs"}
+    if os.path.exists("/app/static/index.html"):
+        return FileResponse("/app/static/index.html")
+    return {"message": "NAU Quantum v5.4 API", "docs": "/docs"}
 
 if os.path.exists("/app/static"):
     app.mount("/static", StaticFiles(directory="/app/static"), name="static")
