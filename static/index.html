@@ -229,14 +229,16 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 <div id="scannerModal">
   <div id="scannerContent">
     <div id="scannerHeader">
-      <h2>📡 Scanner PRO — 725 Activos</h2>
+      <h2>📡 Scanner PRO — 2000+ Activos</h2>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <select id="scanIndexFilter" style="padding:4px 8px;border-radius:4px;background:var(--bg3);border:1px solid var(--bg4);color:var(--text);font-size:12px">
-          <option value="ALL">📊 TODOS (725)</option>
-          <option value="S&P500">S&P 500 (493)</option>
-          <option value="NASDAQ100">NASDAQ 100 (105)</option>
+          <option value="ALL">📊 TODOS (2000+)</option>
+          <option value="S&P500">S&P 500 (480)</option>
+          <option value="NASDAQ100">NASDAQ 100 (103)</option>
           <option value="DOW30">DOW JONES 30 (31)</option>
-          <option value="RUSSELL2000">RUSSELL 2000 (150)</option>
+          <option value="RUSSELL2000">RUSSELL 2000 (341)</option>
+          <option value="MIDCAP400">S&P MidCap 400 (198)</option>
+          <option value="GROWTH">Growth/Value (1194)</option>
           <option value="ETF">ETFs</option>
           <option value="CRYPTO">CRYPTO</option>
           <option value="INDEX">ÍNDICES</option>
@@ -820,7 +822,7 @@ document.getElementById('runScanBtn').onclick = async () => {
 
   try {
     const conf = document.getElementById('scanConfInput').value;
-    const resp = await fetch(`${API_BASE}/api/scan?interval=${state.interval}&min_confidence=${conf}&index=${indexFilter}`);
+    const resp = await fetch(`${API_BASE}/api/scan?interval=${state.interval}&min_confidence=${conf}&index=${encodeURIComponent(indexFilter)}`);
     const data = await resp.json();
     loading.style.display = 'none';
 
