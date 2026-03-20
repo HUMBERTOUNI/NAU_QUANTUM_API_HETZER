@@ -245,88 +245,71 @@ def download_and_compute(sym, interval, prepost=False):
     cache_set(ck, result)
     return result
 
-# ═══ PARALLEL SCANNER (Fix #1 + #3: 16 workers for CX43) ═══
+# ═══ PARALLEL SCANNER — ROBUST ═══
 
 def scan_one(sym_info, interval, min_conf):
+    """Scan one stock using the main download_and_compute. Never raises."""
     sym = sym_info["s"]
-    idx_label = " · ".join(sorted(INDEX_MEMBERSHIP.get(sym, {"OTHER"})))
     try:
-        # For scanning: use shorter period to be FAST (1y instead of 5y)
-        scan_interval_map = {
-            "1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h",
-            "2h":"1h","4h":"1h","1d":"1d","1wk":"1wk","1mo":"1mo","3mo":"3mo","6mo":"1mo","1y":"3mo"
-        }
-        yf_interval = scan_interval_map.get(interval, "1d")
-        scan_period = "1y" if yf_interval == "1d" else ("6mo" if yf_interval in ("1h",) else "60d")
-        
-        df, err = safe_download(sym, scan_period, yf_interval, False)
-        if err or df is None or df.empty or len(df) < 50:
+        data = download_and_compute(sym, interval, False)
+        if not data or "error" in data:
             return None
-        
-        resample_map = {"2h":"2h","4h":"4h","6mo":"6MS","1y":"YS"}
-        if interval in resample_map:
-            df = df.resample(resample_map[interval]).agg(
-                {"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
-            if len(df) < 50: return None
-        
-        df = indicator.compute(df)
-        last = df.iloc[-1]
-        sig_val = float(last["NAU_Signal"])
-        conf_val = float(last["NAU_Confidence"])
-        label = signal_label(sig_val, conf_val)
-        
-        if conf_val * 100 < min_conf or abs(sig_val) < 15 or label == "NEUTRAL":
+        s = data.get("summary")
+        if not s:
             return None
-        
-        price = float(last["Close"])
-        atr = np.mean(df["High"].iloc[-14:].values - df["Low"].iloc[-14:].values) if len(df) >= 14 else price * 0.02
-        
-        if label in ("COMPRA FUERTE","COMPRA"):
-            entry, sl, tp1, tp2 = price, round(price-1.5*atr,2), round(price+2*atr,2), round(price+3*atr,2)
-        else:
-            entry, sl, tp1, tp2 = price, round(price+1.5*atr,2), round(price-2*atr,2), round(price-3*atr,2)
-        
-        factor_cols = ["NAU_Kalman_Score","NAU_Wavelet_Score","NAU_HMM_Score","NAU_Entropy_Score",
-                       "NAU_Hurst_Score","NAU_OrderFlow_Score","NAU_Attention_Score","NAU_RL_Score"]
-        factors = {}
-        for col in factor_cols:
-            if col in df.columns and pd.notna(last.get(col)):
-                factors[col.replace("NAU_","").replace("_Score","")] = round(float(last[col]),1)
+        conf = s.get("confidence", 0)
+        sig = s.get("signal", 0)
+        label = s.get("label", "NEUTRAL")
+        if conf < min_conf or abs(sig) < 15 or label == "NEUTRAL":
+            return None
+        idx_label = " · ".join(sorted(INDEX_MEMBERSHIP.get(sym, {"OTHER"})))
+        ei = data.get("sl_tp") or {}
+        factors = data.get("factors", {})
         top5 = sorted(factors.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
-        reasoning = f"{label} | " + {0:"BULL",1:"BEAR",2:"RANGE"}.get(int(last["NAU_Regime"]),"?") + " | " + ", ".join(f"{k}:{v:+.0f}" for k,v in top5)
-        
-        return {"symbol":sym,"index":idx_label,"signal":round(sig_val,1),
-                "confidence":round(conf_val*100,1),
-                "regime":{0:"BULL",1:"BEAR",2:"RANGE"}.get(int(last["NAU_Regime"]),"?"),
-                "label":label,"direction":"LONG" if sig_val>0 else "SHORT",
-                "price":round(price,2),"entry":round(entry,2),
-                "sl":round(sl,2),"tp1":round(tp1,2),"tp2":round(tp2,2),"tp3":0,
-                "reasoning":reasoning,
-                "score":round(abs(sig_val)*(conf_val*100/100),1)}
-    except:
+        reasoning = f"{label} | {s.get('regime_name','?')} | " + ", ".join(f"{k}:{v:+.0f}" for k,v in top5)
+        return {
+            "symbol": sym, "index": idx_label, "signal": sig, "confidence": conf,
+            "regime": s.get("regime_name", "?"), "label": label,
+            "direction": "LONG" if sig > 0 else "SHORT",
+            "price": s.get("last_price", 0),
+            "entry": ei.get("entry", s.get("last_price", 0)),
+            "sl": ei.get("sl", 0), "tp1": ei.get("tp1", 0),
+            "tp2": ei.get("tp2", 0), "tp3": ei.get("tp3", 0),
+            "reasoning": reasoning,
+            "score": round(abs(sig) * (conf / 100), 1),
+        }
+    except Exception:
         return None
 
+
 @app.get("/api/scan")
-def scan_stocks(interval:str=Query("1d"), min_confidence:float=Query(55), index:str=Query("ALL")):
-    universe = filter_universe(index)
-    # Limit ALL to top 500 to prevent hour-long scans
-    if index == "ALL" and len(universe) > 500:
-        universe = universe[:500]
-    t0 = time.time()
-    results = []
-    errors = 0
-    with ThreadPoolExecutor(max_workers=16) as ex:
-        futs = {ex.submit(scan_one, si, interval, min_confidence): si for si in universe}
-        for fut in as_completed(futs, timeout=300):  # 5 min max
-            try:
-                r = fut.result(timeout=30)  # 30s per stock max
-                if r: results.append(r)
-            except:
-                errors += 1
-    results.sort(key=lambda x: x["score"], reverse=True)
-    return {"scan_results":results[:50],"total_scanned":len(universe),"total_found":len(results),
-            "errors":errors,"scan_time":round(time.time()-t0,1),"interval":interval,
-            "index_filter":index,"timestamp":int(time.time())}
+def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), index: str = Query("ALL")):
+    """Robust parallel scanner. Never crashes — always returns JSON."""
+    try:
+        universe = filter_universe(index)
+        if index == "ALL" and len(universe) > 500:
+            universe = universe[:500]
+        t0 = time.time()
+        results = []
+        errors = 0
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            future_map = {executor.submit(scan_one, si, interval, min_confidence): si for si in universe}
+            for future in as_completed(future_map):
+                try:
+                    r = future.result()
+                    if r is not None:
+                        results.append(r)
+                except Exception:
+                    errors += 1
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return {"scan_results": results[:50], "total_scanned": len(universe),
+                "total_found": len(results), "errors": errors,
+                "scan_time": round(time.time() - t0, 1), "interval": interval,
+                "index_filter": index, "timestamp": int(time.time())}
+    except Exception as e:
+        return {"scan_results": [], "total_scanned": 0, "total_found": 0,
+                "errors": 1, "scan_time": 0, "error": str(e),
+                "interval": interval, "index_filter": index, "timestamp": int(time.time())}
 
 @app.get("/api/chart")
 def get_chart(symbol:str=Query("AAPL"), interval:str=Query("1d"), prepost:bool=Query(False)):
