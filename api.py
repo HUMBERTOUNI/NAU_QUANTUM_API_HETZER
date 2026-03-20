@@ -29,7 +29,7 @@ app = FastAPI(title="NAU Quantum v5.3 — Sentinel Quantum Edge")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 CACHE = {}
-CACHE_TTL = 60
+CACHE_TTL = 300
 
 def cache_get(key):
     if key in CACHE and time.time() - CACHE[key][1] < CACHE_TTL:
