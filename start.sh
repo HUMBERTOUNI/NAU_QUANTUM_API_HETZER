@@ -3,6 +3,6 @@
 exec uvicorn api:app \
     --host 0.0.0.0 \
     --port 9000 \
-    --workers 2 \
+    --workers 8 \
     --timeout-keep-alive 300 \
     --timeout-graceful-shutdown 300
