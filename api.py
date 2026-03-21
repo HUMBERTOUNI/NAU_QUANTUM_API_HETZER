@@ -201,8 +201,9 @@ def download_and_compute(sym, interval, prepost=False):
                ["VWAP","EMA_9","EMA_21","EMA_50","EMA_200","SMA_20","BB_upper","BB_lower",
                 "RSI","MACD","MACD_signal","MACD_hist"]
     for idx, row in df.iterrows():
-        try: ts = int(idx.timestamp()) + PERU_OFFSET
-        except: ts = int(pd.Timestamp(idx).timestamp()) + PERU_OFFSET
+        # Use raw UTC timestamp — lightweight-charts handles timezone display
+        try: ts = int(idx.timestamp())
+        except: ts = int(pd.Timestamp(idx).timestamp())
         bar = {"time":ts,"open":round(float(row["Open"]),4),"high":round(float(row["High"]),4),
                "low":round(float(row["Low"]),4),"close":round(float(row["Close"]),4),
                "volume":int(float(row["Volume"]))}
