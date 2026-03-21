@@ -637,19 +637,19 @@ function renderChart() {
   }
 
   // Main candles — color pre/post market differently
-  // NYSE regular hours: 9:30-16:00 ET
-  // Timestamps are UTC. ET = UTC-5 (EST) or UTC-4 (EDT)
-  // Regular hours in UTC: ~13:30-21:00 (covers both EST and EDT)
+  // Timestamps are in Peru time (UTC-5). 
+  // NYSE in Peru time: 8:30-15:00 (DST Mar-Nov) or 9:30-16:00 (EST Nov-Mar)
+  // Use 8:30-15:00 for current DST season
   const isIntraday = ['1m','5m','15m','30m','1h','2h','4h'].includes(state.interval);
   
   function isExtendedHours(ts) {
     if (!isIntraday) return false;
     const d = new Date(ts * 1000);
-    const utcH = d.getUTCHours();
-    const utcM = d.getUTCMinutes();
-    const utcMin = utcH * 60 + utcM;
-    // Regular market in UTC: 13:30 (810) to 21:00 (1260) covers both EST and EDT
-    return utcMin < 810 || utcMin >= 1260;
+    const h = d.getUTCHours();
+    const m = d.getUTCMinutes();
+    const totalMin = h * 60 + m;
+    // Regular market Peru time: 8:30 (510) to 15:00 (900) during DST
+    return totalMin < 510 || totalMin >= 900;
   }
   
   const c = getColors();
