@@ -255,9 +255,8 @@ def download_and_compute(sym, interval, prepost=False):
 # ══════════════════════════════════════════════════════════════
 
 def scan_fast(sym, interval):
-    """Ultra-fast scan: download SHORT period, compute engine, return signal only."""
+    """Thread-safe scan: creates own indicator instance, downloads SHORT period."""
     try:
-        # Determine yfinance params for scanning (SHORT periods)
         yf_interval_map = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h",
                            "2h":"1h","4h":"1h","1d":"1d","1wk":"1wk","1mo":"1mo",
                            "3mo":"3mo","6mo":"1mo","1y":"3mo"}
@@ -268,7 +267,6 @@ def scan_fast(sym, interval):
         if err or df is None or df.empty:
             return None
 
-        # Resample if needed
         resample_map = {"2h":"2h","4h":"4h","6mo":"6MS","1y":"YS"}
         if interval in resample_map:
             df = df.resample(resample_map[interval]).agg(
@@ -277,8 +275,9 @@ def scan_fast(sym, interval):
         if len(df) < 50:
             return None
 
-        # Run the engine
-        df = indicator.compute(df)
+        # CRITICAL: Create a NEW indicator instance for thread safety
+        local_indicator = NAUQuantumAlphaIndicator()
+        df = local_indicator.compute(df)
         last = df.iloc[-1]
 
         sig_val = float(last["NAU_Signal"])
@@ -363,14 +362,18 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
     """Professional parallel scanner. Always returns valid JSON."""
     try:
         universe = filter_universe(index)
-        if index == "ALL" and len(universe) > 500:
-            universe = universe[:500]
-
+        # Limit to prevent timeout: max 200 per scan
+        max_stocks = min(200, len(universe))
+        if index == "ALL":
+            max_stocks = 150
+        universe = universe[:max_stocks]
+        
         t0 = time.time()
         results = []
         errors = 0
 
-        with ThreadPoolExecutor(max_workers=16) as executor:
+        # 8 workers max to not overwhelm the server
+        with ThreadPoolExecutor(max_workers=8) as executor:
             future_map = {executor.submit(scan_one, si, interval, min_confidence): si for si in universe}
             for future in as_completed(future_map):
                 try:
