@@ -115,11 +115,17 @@ def compute_technicals(df):
         df["MACD"] = macd.values; df["MACD_signal"] = sig.values; df["MACD_hist"] = (macd-sig).values
     return df
 
+import threading
+
+# yfinance is NOT thread-safe — downloads must be serialized
+_download_lock = threading.Lock()
+
 def safe_download(sym, period, interval, prepost=False):
-    try:
-        raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False)
-    except Exception as e:
-        return None, str(e)
+    with _download_lock:
+        try:
+            raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False)
+        except Exception as e:
+            return None, str(e)
     if raw is None or raw.empty: return None, "Empty"
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.get_level_values(0)
@@ -150,9 +156,10 @@ def get_prev_close(sym):
     if ck in PREV_CLOSE_CACHE and time.time() - PREV_CLOSE_CACHE[ck][1] < 3600:
         return PREV_CLOSE_CACHE[ck][0]
     try:
-        t = yf.Ticker(sym)
-        info = t.fast_info
-        pc = float(info.get("previousClose", 0) or info.get("regularMarketPreviousClose", 0))
+        with _download_lock:
+            t = yf.Ticker(sym)
+            info = t.fast_info
+            pc = float(info.get("previousClose", 0) or info.get("regularMarketPreviousClose", 0))
         if pc > 0:
             PREV_CLOSE_CACHE[ck] = (pc, time.time())
             return pc
@@ -362,18 +369,19 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
     """Professional parallel scanner. Always returns valid JSON."""
     try:
         universe = filter_universe(index)
-        # Limit to prevent timeout: max 200 per scan
-        max_stocks = min(200, len(universe))
-        if index == "ALL":
-            max_stocks = 150
+        # Limit to keep scan time reasonable (~3s per stock serialized)
+        max_map = {"ALL": 100, "S&P500": 100, "NASDAQ100": 103, "DOW30": 31,
+                   "RUSSELL2000": 100, "MIDCAP400": 100, "GROWTH": 100,
+                   "ETF": 37, "CRYPTO": 12, "INDEX": 6, "COMM/FX": 8}
+        max_stocks = max_map.get(index, 100)
         universe = universe[:max_stocks]
         
         t0 = time.time()
         results = []
         errors = 0
 
-        # 8 workers max to not overwhelm the server
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        # 4 workers — downloads are serialized for data integrity
+        with ThreadPoolExecutor(max_workers=4) as executor:
             future_map = {executor.submit(scan_one, si, interval, min_confidence): si for si in universe}
             for future in as_completed(future_map):
                 try:
