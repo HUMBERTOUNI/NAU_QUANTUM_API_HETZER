@@ -572,7 +572,8 @@ function initCharts() {
     grid: { vertLines: { color: '#1a1f2e' }, horzLines: { color: '#1a1f2e' } },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     rightPriceScale: { borderColor: '#242938', scaleMargins: { top: 0.05, bottom: 0.05 }, autoScale: true, alignLabels: true },
-    timeScale: { borderColor: '#242938', timeVisible: true, secondsVisible: false },
+    timeScale: { borderColor: '#242938', timeVisible: true, secondsVisible: false,
+                 localization: { locale: 'en-US', dateFormat: 'MM/dd/yyyy' } },
     handleScroll: true, handleScale: true,
   };
 
@@ -636,18 +637,19 @@ function renderChart() {
   }
 
   // Main candles — color pre/post market differently
-  // NYSE regular hours: 9:30-16:00 ET (UTC-5 = Peru time)
-  // Pre-market: 4:00-9:30, Post-market: 16:00-20:00
+  // NYSE regular hours: 9:30-16:00 ET
+  // Timestamps are UTC. ET = UTC-5 (EST) or UTC-4 (EDT)
+  // Regular hours in UTC: ~13:30-21:00 (covers both EST and EDT)
   const isIntraday = ['1m','5m','15m','30m','1h','2h','4h'].includes(state.interval);
   
   function isExtendedHours(ts) {
     if (!isIntraday) return false;
-    const d = new Date(ts * 1000);  // timestamps already in Peru/ET time
-    const h = d.getUTCHours();
-    const m = d.getUTCMinutes();
-    const totalMin = h * 60 + m;
-    // Regular: 9:30 (570) to 16:00 (960)
-    return totalMin < 570 || totalMin >= 960;
+    const d = new Date(ts * 1000);
+    const utcH = d.getUTCHours();
+    const utcM = d.getUTCMinutes();
+    const utcMin = utcH * 60 + utcM;
+    // Regular market in UTC: 13:30 (810) to 21:00 (1260) covers both EST and EDT
+    return utcMin < 810 || utcMin >= 1260;
   }
   
   const c = getColors();
