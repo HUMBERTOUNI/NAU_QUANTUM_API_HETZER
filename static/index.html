@@ -171,6 +171,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
     <button class="tool-btn" id="fibToolBtn" title="Fibonacci">Fib</button>
     <button class="tool-btn" id="fibClearBtn" title="Borrar Fibonacci" style="color:var(--text3)">✕Fib</button>
     <button class="tool-btn" id="scanBtn" title="Scanner">📡 <span>Scanner</span></button>
+    <button class="tool-btn" id="vcSignalBtn" title="Señales consecutivas V/C" style="color:var(--gold)">⚡ <span>Señal V/C</span></button>
     <button class="tool-btn" id="wlBtn" title="Watchlist">⭐ <span>Watchlist</span></button>
     <button class="tool-btn" id="settingsBtn" title="Configuración">⚙️</button>
   </div>
@@ -265,11 +266,54 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
         <tbody id="scannerTbody"></tbody>
       </table>
     </div>
-    <div id="scannerFooter"><span id="scanInfo">Listo para escanear</span></div>
+    <div id="scannerFooter">
+      <span id="scanInfo">Listo para escanear</span>
+      <button id="downloadScanBtn" style="background:var(--green);color:#fff;padding:4px 12px;border-radius:4px;font-size:12px;display:none">📥 Descargar Excel</button>
+    </div>
   </div>
 </div>
 
 <!-- ═══ SETTINGS MODAL ═══ -->
+
+<!-- ═══ SEÑAL V/C MODAL ═══ -->
+<div id="vcModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;background:rgba(0,0,0,.6);justify-content:center;align-items:center">
+  <div style="background:var(--bg2);border:1px solid var(--bg4);border-radius:12px;width:950px;max-width:95vw;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.6)">
+    <div style="padding:16px 20px;border-bottom:1px solid var(--bg4);display:flex;justify-content:space-between;align-items:center">
+      <h2 style="color:var(--gold)">⚡ Señales Consecutivas V/C</h2>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:12px;color:var(--text2)">Acciones con 2+ señales consecutivas de compra o venta</span>
+        <button id="runVCBtn" style="background:var(--gold);color:#000;padding:6px 16px;border-radius:4px;font-weight:600">⚡ Buscar</button>
+        <button id="downloadVCBtn" style="background:var(--green);color:#fff;padding:4px 12px;border-radius:4px;font-size:12px;display:none">📥 Excel</button>
+        <button id="closeVCBtn" style="font-size:20px;padding:0 8px">✕</button>
+      </div>
+    </div>
+    <div id="vcBody" style="flex:1;overflow-y:auto;padding:0">
+      <div id="vcLoading" style="display:none;padding:40px;text-align:center">
+        <div style="font-size:14px;margin-bottom:8px">⚡ Buscando señales consecutivas...</div>
+        <div style="color:var(--text3)">Escaneando 2000+ acciones del mercado USA. Esto puede tomar 15-25 minutos.</div>
+        <div style="color:var(--text3);margin-top:4px">No cierres esta ventana. Los datos serán precisos y confiables.</div>
+      </div>
+      <table id="vcTable" style="width:100%;border-collapse:collapse">
+        <thead><tr style="position:sticky;top:0;background:var(--bg3)">
+          <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)">ACCIÓN</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)">NOMBRE</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)">SEÑAL</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)"># CONSEC.</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)">PRECIO</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)">ENTRADA</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)">SL</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)">TP1</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)">TP2</th>
+          <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)">TP3</th>
+        </tr></thead>
+        <tbody id="vcTbody"></tbody>
+      </table>
+    </div>
+    <div style="padding:12px 20px;border-top:1px solid var(--bg4);font-size:12px;color:var(--text2)" id="vcInfo">Listo</div>
+  </div>
+</div>
+
+<!-- ═══ SETTINGS MODAL (original) ═══ -->
 <div id="settingsModal">
   <div id="settingsContent">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -298,8 +342,14 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
       <label>Color Entry <input type="color" id="setEntryColor" value="#2962ff"></label>
       <label>Color Stop Loss <input type="color" id="setSLColor" value="#ef5350"></label>
       <label>Color Take Profit <input type="color" id="setTPColor" value="#26a69a"></label>
-      <label>Tamaño texto señales <select id="setSignalSize"><option value="10">Pequeño</option><option value="12" selected>Normal</option><option value="14">Grande</option><option value="16">Muy Grande</option></select></label>
+      <label>Tamaño texto señales <select id="setSignalSize"><option value="10">Pequeño</option><option value="12" selected>Normal</option><option value="14">Grande</option><option value="16">Muy Grande</option><option value="18">Extra Grande</option></select></label>
       <label>Grosor líneas indicadores <select id="setLineWidth"><option value="1" selected>Fino</option><option value="2">Normal</option><option value="3">Grueso</option></select></label>
+    </div>
+    <div class="setting-group">
+      <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Velas Post-Market</h3>
+      <label>Color post-market alcista <input type="color" id="setExtBullColor" value="#1a3a35"></label>
+      <label>Color post-market bajista <input type="color" id="setExtBearColor" value="#3a1a1a"></label>
+      <label>Opacidad post-market <span id="extOpVal">35%</span><input type="range" id="setExtOpacity" min="5" max="80" value="35"></label>
     </div>
     <div class="setting-group">
       <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Opacidad</h3>
@@ -656,9 +706,8 @@ function renderChart() {
   mainSeries.setData(displayBars.map(b => {
     const ext = isExtendedHours(b.time);
     if (ext) {
-      // Extended hours: dimmer colors with lower opacity
-      const upCol = b.close >= b.open ? 'rgba(38,166,154,0.35)' : 'rgba(239,83,80,0.35)';
-      const downCol = upCol;
+      const op = c.extOpacity / 100;
+      const upCol = b.close >= b.open ? c.extBull : c.extBear;
       return { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
                color: upCol, borderColor: upCol, wickColor: upCol };
     }
@@ -942,6 +991,7 @@ document.getElementById('runScanBtn').onclick = async () => {
         };
       });
       info.textContent = `${data.total_found} señales de ${data.total_scanned} activos | ${data.scan_time}s | TF: ${state.interval} | Filtro: ${indexFilter}`;
+      if (data.scan_results.length > 0) document.getElementById('downloadScanBtn').style.display = 'inline-block';
     }
   } catch(e) {
     loading.style.display = 'none';
@@ -966,6 +1016,8 @@ function getColors() {
     signalBuy: s.signalBuyColor || '#26a69a', signalSell: s.signalSellColor || '#ef5350',
     signalSize: parseInt(s.signalSize) || 12,
     lineWidth: parseInt(s.lineWidth) || 1,
+    extBull: s.extBullColor || '#1a3a35', extBear: s.extBearColor || '#3a1a1a',
+    extOpacity: parseInt(s.extOpacity) || 35,
   };
 }
 
@@ -987,6 +1039,10 @@ function loadSettingsUI() {
   document.getElementById('setSignalSellColor').value = c.signalSell;
   document.getElementById('setSignalSize').value = String(c.signalSize);
   document.getElementById('setLineWidth').value = String(c.lineWidth);
+  document.getElementById('setExtBullColor').value = c.extBull;
+  document.getElementById('setExtBearColor').value = c.extBear;
+  document.getElementById('setExtOpacity').value = String(c.extOpacity);
+  document.getElementById('extOpVal').textContent = c.extOpacity + '%';
 }
 
 document.getElementById('applySettings').onclick = () => {
@@ -1006,6 +1062,9 @@ document.getElementById('applySettings').onclick = () => {
   state.settings.signalSellColor = document.getElementById('setSignalSellColor').value;
   state.settings.signalSize = document.getElementById('setSignalSize').value;
   state.settings.lineWidth = document.getElementById('setLineWidth').value;
+  state.settings.extBullColor = document.getElementById('setExtBullColor').value;
+  state.settings.extBearColor = document.getElementById('setExtBearColor').value;
+  state.settings.extOpacity = document.getElementById('setExtOpacity').value;
   localStorage.setItem('nau_settings', JSON.stringify(state.settings));
   const c = getColors();
   mainSeries.applyOptions({ upColor: c.bull, downColor: c.bear, borderUpColor: c.bull, borderDownColor: c.bear, wickUpColor: c.bull, wickDownColor: c.bear });
@@ -1024,6 +1083,88 @@ document.getElementById('resetSettings').onclick = () => {
 document.getElementById('setCandleOpacity').oninput = (e) => { document.getElementById('candleOpVal').textContent = e.target.value + '%'; };
 document.getElementById('setLineOpacity').oninput = (e) => { document.getElementById('lineOpVal').textContent = e.target.value + '%'; };
 document.getElementById('setLabelOpacity').oninput = (e) => { document.getElementById('labelOpVal').textContent = e.target.value + '%'; };
+document.getElementById('setExtOpacity').oninput = (e) => { document.getElementById('extOpVal').textContent = e.target.value + '%'; };
+
+// ═══ EXCEL DOWNLOAD (Feature 1) ═══
+function downloadExcel(tableId, filename) {
+  const table = document.getElementById(tableId);
+  if (!table) return;
+  let csv = '';
+  const rows = table.querySelectorAll('tr');
+  rows.forEach(row => {
+    const cells = row.querySelectorAll('th, td');
+    const rowData = [];
+    cells.forEach(cell => rowData.push('"' + cell.textContent.trim().replace(/"/g, '""') + '"'));
+    csv += rowData.join(',') + '\n';
+  });
+  const BOM = '\uFEFF';
+  const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = filename + '_' + new Date().toISOString().slice(0,10) + '.csv';
+  link.click();
+}
+
+document.getElementById('downloadScanBtn').onclick = () => downloadExcel('scannerTable', 'Scanner_SQE');
+
+// ═══ SEÑAL V/C — Consecutive Signal Scanner (Feature 4) ═══
+document.getElementById('vcSignalBtn').onclick = () => {
+  document.getElementById('vcModal').style.display = 'flex';
+};
+document.getElementById('closeVCBtn').onclick = () => {
+  document.getElementById('vcModal').style.display = 'none';
+};
+document.getElementById('vcModal').onclick = (e) => {
+  if (e.target.id === 'vcModal') e.target.style.display = 'none';
+};
+
+document.getElementById('runVCBtn').onclick = async () => {
+  const loading = document.getElementById('vcLoading');
+  const tbody = document.getElementById('vcTbody');
+  const info = document.getElementById('vcInfo');
+  loading.style.display = 'block';
+  tbody.innerHTML = '';
+  info.textContent = 'Escaneando señales consecutivas...';
+  
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 900000);
+    const resp = await fetch(`${API_BASE}/api/scan_vc?interval=${state.interval}`, { signal: controller.signal });
+    clearTimeout(timeout);
+    const data = await resp.json();
+    loading.style.display = 'none';
+    
+    if (data.results && data.results.length > 0) {
+      tbody.innerHTML = data.results.map(r => {
+        const cls = r.direction === 'LONG' ? 'long' : 'short';
+        return `<tr style="cursor:pointer;border-bottom:1px solid var(--bg)" data-sym="${r.symbol}">
+          <td style="padding:8px 10px;font-weight:600">${r.symbol}</td>
+          <td style="padding:8px 10px;font-size:11px;color:var(--text2)">${r.name || r.symbol}</td>
+          <td style="padding:8px 10px" class="${cls}"><b>${r.label}</b></td>
+          <td style="padding:8px 10px;color:var(--gold)"><b>${r.consecutive}</b></td>
+          <td style="padding:8px 10px">$${r.price?.toFixed(2)}</td>
+          <td style="padding:8px 10px"><b>$${r.entry?.toFixed(2)}</b></td>
+          <td style="padding:8px 10px;color:var(--red)">$${r.sl?.toFixed(2)}</td>
+          <td style="padding:8px 10px;color:var(--green)">$${r.tp1?.toFixed(2)}</td>
+          <td style="padding:8px 10px;color:var(--green)">$${r.tp2?.toFixed(2)}</td>
+          <td style="padding:8px 10px;color:var(--cyan)">$${r.tp3?.toFixed(2)}</td>
+        </tr>`;
+      }).join('');
+      tbody.querySelectorAll('tr').forEach(tr => {
+        tr.onclick = () => { state.symbol = tr.dataset.sym; searchInput.value = state.symbol; saveState(); document.getElementById('vcModal').style.display = 'none'; loadChart(); };
+      });
+      document.getElementById('downloadVCBtn').style.display = 'inline-block';
+      info.textContent = `${data.results.length} acciones con señales consecutivas | ${data.scan_time}s | TF: ${state.interval}`;
+    } else {
+      info.textContent = `0 señales consecutivas encontradas en ${data.total_scanned || 0} activos | ${data.scan_time || 0}s`;
+    }
+  } catch(e) {
+    loading.style.display = 'none';
+    info.textContent = 'Error: ' + e.message;
+  }
+};
+
+document.getElementById('downloadVCBtn').onclick = () => downloadExcel('vcTable', 'Senales_VC_SQE');
 
 // ═══ CANDLE TYPE CHANGE ═══
 document.getElementById('candleSelect').onchange = () => { currentLoadingSymbol = null; if (chartData) renderChart(); };
