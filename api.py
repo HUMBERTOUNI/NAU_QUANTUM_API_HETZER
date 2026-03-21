@@ -182,7 +182,12 @@ def download_and_compute(sym, interval, prepost=False):
     if err: return {"error": f"Download failed for {sym}: {err}"}
     if df is None or df.empty: return {"error": f"No data for {sym}"}
     if config["resample"]:
-        df = df.resample(config["resample"]).agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+        rs = config["resample"]
+        # Align intraday resamples with NYSE open (9:30 AM ET = 14:30 UTC)
+        if rs in ("2h", "4h"):
+            df = df.resample(rs, offset="14h30min").agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+        else:
+            df = df.resample(rs).agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
     if len(df) < 50: return {"error": f"Only {len(df)} bars for {sym} on {interval}. Need 50+."}
     t0 = time.time()
     try:
@@ -277,8 +282,13 @@ def scan_fast(sym, interval):
 
         resample_map = {"2h":"2h","4h":"4h","6mo":"6MS","1y":"YS"}
         if interval in resample_map:
-            df = df.resample(resample_map[interval]).agg(
-                {"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+            rs = resample_map[interval]
+            if rs in ("2h", "4h"):
+                df = df.resample(rs, offset="14h30min").agg(
+                    {"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+            else:
+                df = df.resample(rs).agg(
+                    {"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
 
         if len(df) < 50:
             return None
