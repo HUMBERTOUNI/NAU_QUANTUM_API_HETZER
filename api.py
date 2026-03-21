@@ -183,9 +183,25 @@ def download_and_compute(sym, interval, prepost=False):
     if df is None or df.empty: return {"error": f"No data for {sym}"}
     if config["resample"]:
         rs = config["resample"]
-        # Align intraday resamples with NYSE open (9:30 AM ET = 14:30 UTC)
-        if rs in ("2h", "4h"):
-            df = df.resample(rs, offset="14h30min").agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+        # Align intraday resamples with NYSE open (9:30 AM ET)
+        # During DST (Mar-Nov): ET=UTC-4, open=13:30 UTC
+        # During EST (Nov-Mar): ET=UTC-5, open=14:30 UTC
+        # Auto-detect: check if US is in DST right now
+        from datetime import datetime
+        import calendar
+        now = datetime.utcnow()
+        # US DST: 2nd Sunday March to 1st Sunday November
+        mar_second_sun = 14 - calendar.weekday(now.year, 3, 1) % 7 + 7
+        nov_first_sun = 7 - calendar.weekday(now.year, 11, 1) % 7
+        is_dst = (datetime(now.year, 3, mar_second_sun, 7) <= now < datetime(now.year, 11, nov_first_sun, 6))
+        nyse_open_utc_min = 13*60+30 if is_dst else 14*60+30  # minutes from midnight UTC
+        
+        if rs == "2h":
+            off_min = nyse_open_utc_min % 120
+            df = df.resample(rs, offset=f"{off_min}min").agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+        elif rs == "4h":
+            off_min = nyse_open_utc_min % 240
+            df = df.resample(rs, offset=f"{off_min}min").agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
         else:
             df = df.resample(rs).agg({"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
     if len(df) < 50: return {"error": f"Only {len(df)} bars for {sym} on {interval}. Need 50+."}
@@ -284,7 +300,16 @@ def scan_fast(sym, interval):
         if interval in resample_map:
             rs = resample_map[interval]
             if rs in ("2h", "4h"):
-                df = df.resample(rs, offset="14h30min").agg(
+                from datetime import datetime
+                import calendar
+                now = datetime.utcnow()
+                mar_second_sun = 14 - calendar.weekday(now.year, 3, 1) % 7 + 7
+                nov_first_sun = 7 - calendar.weekday(now.year, 11, 1) % 7
+                is_dst = (datetime(now.year, 3, mar_second_sun, 7) <= now < datetime(now.year, 11, nov_first_sun, 6))
+                nyse_open_utc_min = 13*60+30 if is_dst else 14*60+30
+                interval_min = 120 if rs == "2h" else 240
+                off_min = nyse_open_utc_min % interval_min
+                df = df.resample(rs, offset=f"{off_min}min").agg(
                     {"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
             else:
                 df = df.resample(rs).agg(
