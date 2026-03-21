@@ -280,8 +280,14 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
   <div style="background:var(--bg2);border:1px solid var(--bg4);border-radius:12px;width:950px;max-width:95vw;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.6)">
     <div style="padding:16px 20px;border-bottom:1px solid var(--bg4);display:flex;justify-content:space-between;align-items:center">
       <h2 style="color:var(--gold)">⚡ Señales Consecutivas V/C</h2>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="font-size:12px;color:var(--text2)">Acciones con 2+ señales consecutivas de compra o venta</span>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="font-size:12px;color:var(--text2)">Busca 2+ señales consecutivas en últimas velas cerradas</span>
+        <select id="vcPageSelect" style="padding:4px 8px;border-radius:4px;background:var(--bg3);border:1px solid var(--bg4);color:var(--text);font-size:12px">
+          <option value="1">Tanda 1 (1-500)</option>
+          <option value="2">Tanda 2 (501-1000)</option>
+          <option value="3">Tanda 3 (1001-1500)</option>
+          <option value="4">Tanda 4 (1501-2000+)</option>
+        </select>
         <button id="runVCBtn" style="background:var(--gold);color:#000;padding:6px 16px;border-radius:4px;font-weight:600">⚡ Buscar</button>
         <button id="downloadVCBtn" style="background:var(--green);color:#fff;padding:4px 12px;border-radius:4px;font-size:12px;display:none">📥 Excel</button>
         <button id="closeVCBtn" style="font-size:20px;padding:0 8px">✕</button>
@@ -1136,14 +1142,15 @@ document.getElementById('runVCBtn').onclick = async () => {
   const loading = document.getElementById('vcLoading');
   const tbody = document.getElementById('vcTbody');
   const info = document.getElementById('vcInfo');
+  const page = document.getElementById('vcPageSelect').value;
   loading.style.display = 'block';
   tbody.innerHTML = '';
-  info.textContent = 'Escaneando señales consecutivas...';
+  info.textContent = `Escaneando tanda ${page} (acciones ${(page-1)*500+1}-${page*500})...`;
   
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 900000);
-    const resp = await fetch(`${API_BASE}/api/scan_vc?interval=${state.interval}`, { signal: controller.signal });
+    const resp = await fetch(`${API_BASE}/api/scan_vc?interval=${state.interval}&page=${page}`, { signal: controller.signal });
     clearTimeout(timeout);
     const data = await resp.json();
     loading.style.display = 'none';
@@ -1168,9 +1175,9 @@ document.getElementById('runVCBtn').onclick = async () => {
         tr.onclick = () => { state.symbol = tr.dataset.sym; searchInput.value = state.symbol; saveState(); document.getElementById('vcModal').style.display = 'none'; loadChart(); };
       });
       document.getElementById('downloadVCBtn').style.display = 'inline-block';
-      info.textContent = `${data.results.length} acciones con señales consecutivas | ${data.scan_time}s | TF: ${state.interval}`;
+      info.textContent = `${data.results.length} señales consecutivas | Tanda ${data.page}/${data.total_pages} | ${data.total_scanned} activos | ${data.scan_time}s | TF: ${state.interval}`;
     } else {
-      info.textContent = `0 señales consecutivas encontradas en ${data.total_scanned || 0} activos | ${data.scan_time || 0}s`;
+      info.textContent = `0 señales en tanda ${data.page || page}/${data.total_pages || '?'} | ${data.total_scanned || 0} activos | ${data.scan_time || 0}s`;
     }
   } catch(e) {
     loading.style.display = 'none';
