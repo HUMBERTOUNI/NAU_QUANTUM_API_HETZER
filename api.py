@@ -454,7 +454,11 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
 
 # Feature 4: Consecutive Signal Scanner (Señal V/C)
 def scan_vc_one(sym_info, interval):
-    """Check if a stock has 2+ consecutive buy or sell signals. Single download."""
+    """
+    Detect consecutive buy or sell signals in the MOST RECENT completed candles.
+    Checks the last 2-3 CLOSED candles (market hours only).
+    If the last 2 closed candles both have BUY or both have SELL → match.
+    """
     sym = sym_info["s"]
     try:
         yf_interval_map = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h",
@@ -467,7 +471,6 @@ def scan_vc_one(sym_info, interval):
         if err or df is None or df.empty or len(df) < 50:
             return None
         
-        # Resample if needed with NYSE-aligned offset
         resample_map = {"2h":"2h","4h":"4h","6mo":"6MS","1y":"YS"}
         if interval in resample_map:
             rs = resample_map[interval]
@@ -489,42 +492,48 @@ def scan_vc_one(sym_info, interval):
         if len(df) < 50:
             return None
         
-        # Thread-safe: new indicator instance
         local_ind = NAUQuantumAlphaIndicator()
         df = local_ind.compute(df)
         
-        # Check last 6 completed bars for consecutive signals
-        if len(df) < 3:
+        if len(df) < 4:
             return None
-        check_bars = df.iloc[-7:-1]  # Last 6 COMPLETED bars (exclude current)
-        sigs = []
-        for _, row in check_bars.iterrows():
+        
+        # Get signals for the LAST 3 COMPLETED candles (exclude current forming candle)
+        # iloc[-1] = current (possibly still forming), iloc[-2] = last closed, iloc[-3] = before that
+        recent = df.iloc[-4:-1]  # 3 most recent COMPLETED candles
+        labels = []
+        for _, row in recent.iterrows():
             sig = float(row.get("NAU_Signal", 0))
             conf = float(row.get("NAU_Confidence", 0))
             lbl = signal_label(sig, conf)
-            sigs.append(lbl)
+            labels.append(lbl)
         
-        if len(sigs) < 2:
+        # Check: last 2 completed candles must both be BUY or both be SELL
+        if len(labels) < 2:
             return None
         
-        # Count consecutive from most recent completed bar going back
-        last_sig = sigs[-1]
-        if last_sig == "NEUTRAL":
+        last_two = labels[-2:]  # The 2 most recent completed candles
+        
+        # Both must be buy-type or both sell-type
+        both_buy = all("COMPRA" in l for l in last_two)
+        both_sell = all("VENTA" in l for l in last_two)
+        
+        if not both_buy and not both_sell:
             return None
         
-        is_buy = "COMPRA" in last_sig
-        consecutive = 0
-        for s in reversed(sigs):
-            if is_buy and "COMPRA" in s:
-                consecutive += 1
-            elif not is_buy and "VENTA" in s:
-                consecutive += 1
-            else:
-                break
+        is_buy = both_buy
+        last_label = last_two[-1]
         
-        if consecutive < 2:
-            return None
+        # Count how many consecutive going back (including the 3rd candle if it matches)
+        consecutive = 2
+        if len(labels) >= 3:
+            third = labels[0]
+            if is_buy and "COMPRA" in third:
+                consecutive = 3
+            elif not is_buy and "VENTA" in third:
+                consecutive = 3
         
+        # Price and SL/TP from current bar
         last = df.iloc[-1]
         price = float(last["Close"])
         atr = float(np.mean(df["High"].iloc[-14:].values.astype(float) - df["Low"].iloc[-14:].values.astype(float)))
@@ -543,7 +552,7 @@ def scan_vc_one(sym_info, interval):
                 break
         
         return {
-            "symbol": sym, "name": name, "label": last_sig,
+            "symbol": sym, "name": name, "label": last_label,
             "direction": "LONG" if is_buy else "SHORT",
             "consecutive": consecutive, "price": round(price, 2),
             "entry": round(entry, 2), "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
@@ -553,10 +562,22 @@ def scan_vc_one(sym_info, interval):
 
 
 @app.get("/api/scan_vc")
-def scan_vc(interval: str = Query("1d")):
-    """Find stocks with 2+ consecutive buy or sell signals. Scans top 500 for ~10 min."""
+def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
+    """
+    Find stocks with 2+ consecutive buy/sell signals in last completed candles.
+    Paginated: page=1 → stocks 1-500, page=2 → 501-1000, page=3 → 1001-1500, page=4 → 1501-2000+
+    """
     try:
-        universe = SCAN_UNIVERSE[:500]  # Top 500 = ~10 min with lock
+        page_size = 500
+        start = (page - 1) * page_size
+        end = start + page_size
+        universe = SCAN_UNIVERSE[start:end]
+        total_pages = (len(SCAN_UNIVERSE) + page_size - 1) // page_size
+        
+        if not universe:
+            return {"results": [], "total_scanned": 0, "scan_time": 0,
+                    "page": page, "total_pages": total_pages, "error": "No more stocks"}
+        
         t0 = time.time()
         results = []
         errors = 0
@@ -577,10 +598,14 @@ def scan_vc(interval: str = Query("1d")):
             "total_scanned": len(universe),
             "scan_time": round(time.time() - t0, 1),
             "interval": interval,
+            "page": page,
+            "total_pages": total_pages,
+            "total_universe": len(SCAN_UNIVERSE),
             "timestamp": int(time.time()),
         }
     except Exception as e:
-        return {"results": [], "total_scanned": 0, "scan_time": 0, "error": str(e)}
+        return {"results": [], "total_scanned": 0, "scan_time": 0, "error": str(e),
+                "page": page, "total_pages": 0}
 
 
 @app.get("/api/chart")
