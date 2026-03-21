@@ -221,10 +221,13 @@ def download_and_compute(sym, interval, prepost=False):
     all_cols = ["NAU_Signal","NAU_Confidence","NAU_Regime","NAU_Kalman"] + factor_cols + \
                ["VWAP","EMA_9","EMA_21","EMA_50","EMA_200","SMA_20","BB_upper","BB_lower",
                 "RSI","MACD","MACD_signal","MACD_hist"]
+    # Peru = UTC-5 always (no DST in Peru)
+    PERU_OFFSET_SEC = -5 * 3600
+    
     for idx, row in df.iterrows():
-        # Use raw UTC timestamp — lightweight-charts handles timezone display
-        try: ts = int(idx.timestamp())
-        except: ts = int(pd.Timestamp(idx).timestamp())
+        # Convert UTC timestamp to Peru time for display (LWC v4 shows UTC)
+        try: ts = int(idx.timestamp()) + PERU_OFFSET_SEC
+        except: ts = int(pd.Timestamp(idx).timestamp()) + PERU_OFFSET_SEC
         bar = {"time":ts,"open":round(float(row["Open"]),4),"high":round(float(row["High"]),4),
                "low":round(float(row["Low"]),4),"close":round(float(row["Close"]),4),
                "volume":int(float(row["Volume"]))}
