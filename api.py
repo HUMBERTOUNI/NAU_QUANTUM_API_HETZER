@@ -452,6 +452,153 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
 
 # ═══ OTHER ENDPOINTS ═══
 
+# Feature 4: Consecutive Signal Scanner (Señal V/C)
+def scan_vc_one(sym_info, interval):
+    """Check if a stock has 2+ consecutive buy or sell signals in recent bars."""
+    sym = sym_info["s"]
+    try:
+        result = scan_fast(sym, interval)
+        if result is None:
+            return None
+        
+        # Need to get the actual signal history — re-download and check last N bars
+        yf_interval_map = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h",
+                           "2h":"1h","4h":"1h","1d":"1d","1wk":"1wk","1mo":"1mo",
+                           "3mo":"3mo","6mo":"1mo","1y":"3mo"}
+        yf_int = yf_interval_map.get(interval, "1d")
+        scan_period = SCAN_PERIOD_MAP.get(interval, "1y")
+        
+        df, err = safe_download(sym, scan_period, yf_int, False)
+        if err or df is None or df.empty or len(df) < 50:
+            return None
+        
+        resample_map = {"2h":"2h","4h":"4h","6mo":"6MS","1y":"YS"}
+        if interval in resample_map:
+            rs = resample_map[interval]
+            from datetime import datetime as dt2
+            import calendar as cal2
+            now2 = dt2.utcnow()
+            ms = 14 - cal2.weekday(now2.year, 3, 1) % 7 + 7
+            ns = 7 - cal2.weekday(now2.year, 11, 1) % 7
+            dst2 = (dt2(now2.year, 3, ms, 7) <= now2 < dt2(now2.year, 11, ns, 6))
+            nopen = 13*60+30 if dst2 else 14*60+30
+            if rs == "2h":
+                df = df.resample(rs, offset=f"{nopen % 120}min").agg(
+                    {"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+            elif rs == "4h":
+                df = df.resample(rs, offset=f"{nopen % 240}min").agg(
+                    {"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+            else:
+                df = df.resample(rs).agg(
+                    {"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
+        
+        if len(df) < 50:
+            return None
+        
+        local_ind = NAUQuantumAlphaIndicator()
+        df = local_ind.compute(df)
+        
+        # Check last 10 bars for consecutive signals
+        last_bars = df.iloc[-10:]
+        signals_list = []
+        for _, row in last_bars.iterrows():
+            sig = float(row.get("NAU_Signal", 0))
+            conf = float(row.get("NAU_Confidence", 0))
+            label = signal_label(sig, conf)
+            if label != "NEUTRAL":
+                signals_list.append(label)
+            else:
+                signals_list.append("N")
+        
+        # Find consecutive from the end
+        if len(signals_list) < 2:
+            return None
+        
+        # Check last 2+ completed bars (exclude current forming bar, use -2 and back)
+        last_signal = signals_list[-2] if len(signals_list) >= 2 else "N"
+        if last_signal == "N":
+            return None
+        
+        # Count consecutive same-direction signals going backwards
+        is_buy = "COMPRA" in last_signal
+        consecutive = 0
+        for i in range(len(signals_list) - 2, -1, -1):
+            s = signals_list[i]
+            if is_buy and "COMPRA" in s:
+                consecutive += 1
+            elif not is_buy and "VENTA" in s:
+                consecutive += 1
+            else:
+                break
+        
+        if consecutive < 2:
+            return None
+        
+        # Get price and SL/TP
+        last = df.iloc[-1]
+        price = float(last["Close"])
+        highs = df["High"].iloc[-14:].values.astype(float)
+        lows = df["Low"].iloc[-14:].values.astype(float)
+        atr = float(np.mean(highs - lows))
+        
+        if is_buy:
+            entry, sl = price, round(price - 1.5 * atr, 2)
+            tp1, tp2, tp3 = round(price + 2*atr, 2), round(price + 3*atr, 2), round(price + 4.5*atr, 2)
+        else:
+            entry, sl = price, round(price + 1.5 * atr, 2)
+            tp1, tp2, tp3 = round(price - 2*atr, 2), round(price - 3*atr, 2), round(price - 4.5*atr, 2)
+        
+        # Get name from SYMBOLS_DB
+        name = sym
+        for s in SYMBOLS_DB:
+            if s["s"] == sym:
+                name = s["n"]
+                break
+        
+        return {
+            "symbol": sym, "name": name,
+            "label": last_signal,
+            "direction": "LONG" if is_buy else "SHORT",
+            "consecutive": consecutive,
+            "price": round(price, 2),
+            "entry": round(entry, 2),
+            "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
+        }
+    except Exception:
+        return None
+
+
+@app.get("/api/scan_vc")
+def scan_vc(interval: str = Query("1d")):
+    """Find stocks with 2+ consecutive buy or sell signals. Scans ALL universe."""
+    try:
+        universe = SCAN_UNIVERSE  # ALL 2000+ stocks
+        t0 = time.time()
+        results = []
+        errors = 0
+        
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_map = {executor.submit(scan_vc_one, si, interval): si for si in universe}
+            for future in as_completed(future_map):
+                try:
+                    r = future.result()
+                    if r is not None:
+                        results.append(r)
+                except Exception:
+                    errors += 1
+        
+        results.sort(key=lambda x: x.get("consecutive", 0), reverse=True)
+        return {
+            "results": results,
+            "total_scanned": len(universe),
+            "scan_time": round(time.time() - t0, 1),
+            "interval": interval,
+            "timestamp": int(time.time()),
+        }
+    except Exception as e:
+        return {"results": [], "total_scanned": 0, "scan_time": 0, "error": str(e)}
+
+
 @app.get("/api/chart")
 def get_chart(symbol: str = Query("AAPL"), interval: str = Query("1d"), prepost: bool = Query(False)):
     try:
