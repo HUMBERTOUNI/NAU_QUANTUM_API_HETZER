@@ -502,48 +502,43 @@ def scan_vc_one(sym_info, interval):
         if len(df) < 10:
             return None
         
-        # Get signals for last 20 COMPLETED candles (exclude current forming = iloc[-1])
-        n_check = min(20, len(df) - 1)
-        completed = df.iloc[-(n_check+1):-1]  # Last N completed candles
+        # Get signals for ALL completed candles (exclude current forming = iloc[-1])
+        completed = df.iloc[:-1]
         
-        labels = []
+        # Build label for EVERY completed candle
+        all_labels = []
         for _, row in completed.iterrows():
             sig = float(row.get("NAU_Signal", 0))
             conf = float(row.get("NAU_Confidence", 0))
             lbl = signal_label(sig, conf)
-            labels.append(lbl)
+            all_labels.append(lbl)
         
-        if len(labels) < 3:
+        if len(all_labels) < 3:
             return None
         
-        # Step 1: Check if the 2 most recent completed candles form a pair
-        last = labels[-1]
-        second_last = labels[-2]
+        # Step 1: The 2 most recent completed candles must both be BUY or both be SELL
+        last = all_labels[-1]
+        second_last = all_labels[-2]
         
         if last == "NEUTRAL" or second_last == "NEUTRAL":
             return None
         
-        # Both must be same direction
-        last_is_buy = "COMPRA" in last
-        second_is_buy = "COMPRA" in second_last
-        last_is_sell = "VENTA" in last
-        second_is_sell = "VENTA" in second_last
-        
-        both_buy = last_is_buy and second_is_buy
-        both_sell = last_is_sell and second_is_sell
+        both_buy = "COMPRA" in last and "COMPRA" in second_last
+        both_sell = "VENTA" in last and "VENTA" in second_last
         
         if not both_buy and not both_sell:
             return None
         
         is_buy = both_buy
         
-        # Step 2: Check ALL candles BEFORE the pair — NONE should have the same signal type
-        history = labels[:-2]  # Everything before the pair
+        # Step 2: Check ENTIRE history before the pair
+        # NO candle in ALL prior history should have the same signal type
+        history = all_labels[:-2]
         for h_label in history:
             if is_buy and "COMPRA" in h_label:
-                return None  # Old buy signal exists → not a new trend
+                return None  # Old buy exists anywhere in history
             if not is_buy and "VENTA" in h_label:
-                return None  # Old sell signal exists → not a new trend
+                return None  # Old sell exists anywhere in history
         
         # MATCH: These are the FIRST 2 consecutive signals of this type = new trend start
         current = df.iloc[-1]
