@@ -571,16 +571,36 @@ def scan_vc_one(sym_info, interval):
 @app.get("/api/scan_vc")
 def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
     """
-    Find stocks with 2+ consecutive buy/sell signals in last completed candles.
-    Paginated: page=1 → stocks 1-500, page=2 → 501-1000, page=3 → 1001-1500, page=4 → 1501-2000+
+    Find stocks with 2+ consecutive buy/sell signals.
+    Pages organized by importance:
+    1 = S&P500 + NASDAQ100 + DOW30 (top ~500)
+    2 = Russell 2000 top + MidCap 400 (~400)
+    3 = Growth/Value stocks (~500)
+    4 = ETFs + Crypto + remaining (~200)
     """
     try:
-        page_size = 500
-        start = (page - 1) * page_size
-        end = start + page_size
-        universe = SCAN_UNIVERSE[start:end]
-        total_pages = (len(SCAN_UNIVERSE) + page_size - 1) // page_size
+        from stock_universe import SP500, NASDAQ_100, DOW_30, RUSSELL_2000_TOP, SP_MIDCAP_400, ADDITIONAL_STOCKS, ETFS, CRYPTO, INDICES, COMMODITIES_FOREX
         
+        # Build curated pages — no duplicates between pages
+        seen = set()
+        def make_page(lists):
+            page_syms = []
+            for lst in lists:
+                for s in lst:
+                    if s not in seen:
+                        seen.add(s)
+                        page_syms.append({"s": s, "idx": " · ".join(sorted(INDEX_MEMBERSHIP.get(s, {"OTHER"})))})
+            return page_syms
+        
+        pages = {
+            1: make_page([SP500, NASDAQ_100, DOW_30]),
+            2: make_page([RUSSELL_2000_TOP, SP_MIDCAP_400]),
+            3: make_page([ADDITIONAL_STOCKS]),
+            4: make_page([ETFS, CRYPTO, INDICES, COMMODITIES_FOREX]),
+        }
+        total_pages = len(pages)
+        
+        universe = pages.get(page, [])
         if not universe:
             return {"results": [], "total_scanned": 0, "scan_time": 0,
                     "page": page, "total_pages": total_pages, "error": "No more stocks"}
