@@ -139,41 +139,41 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 
 /* ═══ RESPONSIVE ═══ */
 @media(max-width:768px){
-  #topBar{flex-wrap:wrap;height:auto;padding:4px;gap:2px}
-  #searchWrap{width:calc(100% - 16px);order:10;margin:2px 0}
-  #tfBar{flex-wrap:wrap;gap:1px}
-  .tf-btn{padding:3px 5px;font-size:10px}
-  #watchlistPanel{display:none!important}
-  #priceDisplay{margin:0 4px;font-size:12px}
+  #topBar{flex-wrap:wrap;height:auto;padding:4px 6px;gap:3px}
+  #searchWrap{width:100%;order:10;margin:3px 0}
+  #searchInput{font-size:14px;padding:8px 10px 8px 28px}
+  #tfBar{flex-wrap:wrap;gap:2px}
+  .tf-btn{padding:4px 6px;font-size:11px}
+  #watchlistPanel{position:fixed;right:0;top:0;bottom:0;width:260px;z-index:200;box-shadow:-4px 0 20px rgba(0,0,0,.5)}
+  #priceDisplay{margin:0 4px}
+  #currentPrice{font-size:16px!important}
+  .tool-btn{padding:5px 8px}
   .tool-btn span{display:none}
-  .tool-btn{padding:4px 6px}
-  #decisionBar{flex-wrap:wrap;height:auto;padding:4px 8px;gap:4px;font-size:10px}
-  #indicatorBar{font-size:9px;gap:3px;padding:2px 6px}
-  .ind-toggle{padding:2px 4px;font-size:9px}
-  #signalPanel{height:40px!important;flex-shrink:0}
-  #factorPanel{display:none!important}
+  #decisionBar{flex-wrap:wrap;height:auto;padding:4px 8px;gap:4px;font-size:11px}
+  #signalLabel{font-size:12px!important;padding:2px 8px}
+  #indicatorBar{gap:4px;padding:3px 8px;font-size:10px;overflow-x:auto}
+  .ind-toggle{padding:3px 6px;font-size:10px;white-space:nowrap}
+  #signalPanel{height:60px!important;flex-shrink:0}
+  #factorPanel{height:40px!important;flex-shrink:0}
   #main{flex:1;overflow:hidden}
-  #chartArea{min-height:0}
-  #chartContainer{flex:1;min-height:0;touch-action:none}
+  #chartContainer{flex:1;min-height:0;touch-action:none;-webkit-touch-callout:none}
   #logo span{display:none}
-  #logo{font-size:10px;padding:0 2px}
-  #analysisBtn{font-size:9px;padding:2px 6px}
-  #sltpToggle{font-size:9px;padding:2px 4px}
-  .dec-item{font-size:9px}
-  #rightTools{gap:1px}
-  #currentPrice{font-size:14px!important}
-  #priceChange{font-size:10px!important}
+  #logo{font-size:11px;padding:0 4px}
+  #analysisBtn{font-size:10px;padding:3px 8px}
+  #sltpToggle{font-size:10px;padding:3px 6px}
+  .dec-item{font-size:10px}
+  #rightTools{gap:2px}
+  #scannerContent,#settingsContent,#analysisContent{width:100vw!important;max-width:100vw!important;max-height:95vh!important;border-radius:0!important}
+  #vcModal>div{width:100vw!important;max-width:100vw!important;max-height:95vh!important;border-radius:0!important}
 }
-@media(max-width:480px){
-  #decisionBar{display:none}
-  #indicatorBar{display:none}
-  #signalPanel{display:none!important}
-  #topBar{padding:2px}
-  .tf-btn{padding:2px 3px;font-size:9px}
-  #searchWrap{margin:0}
-  #searchInput{font-size:12px;padding:4px 8px 4px 24px}
+@media(max-width:400px){
+  .tf-btn{padding:3px 4px;font-size:10px}
+  #decisionBar{gap:3px;padding:2px 6px}
+  .dec-item{font-size:9px}
+  #signalLabel{font-size:11px!important}
+  #signalPanel{height:50px!important}
+  #factorPanel{height:30px!important}
   #logo{display:none}
-  #chartContainer{touch-action:none}
 }
 </style>
 </head>
