@@ -455,9 +455,18 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
 # Feature 4: Consecutive Signal Scanner (Señal V/C)
 def scan_vc_one(sym_info, interval):
     """
-    Detect consecutive buy or sell signals in the MOST RECENT completed candles.
-    Checks the last 2-3 CLOSED candles (market hours only).
-    If the last 2 closed candles both have BUY or both have SELL → match.
+    Detect NEWLY FORMED consecutive signals.
+    
+    Rule:
+    - Take last 5 COMPLETED candles (exclude current forming candle)
+    - The 2 most recent closed candles MUST both have BUY or both have SELL signal
+    - The candle BEFORE those 2 must be NEUTRAL or OPPOSITE direction
+    - This ensures we only catch NEW trend formations, not ongoing old trends
+    
+    Example (reading right to left, most recent first):
+      [NEUTRAL] [NEUTRAL] [VENTA] [VENTA] [current] → MATCH (new sell trend)
+      [COMPRA]  [VENTA]   [VENTA] [VENTA] [current] → NO MATCH (3rd venta before = old trend)
+      [NEUTRAL] [COMPRA]  [COMPRA] [current]         → MATCH (new buy trend)
     """
     sym = sym_info["s"]
     try:
@@ -495,45 +504,44 @@ def scan_vc_one(sym_info, interval):
         local_ind = NAUQuantumAlphaIndicator()
         df = local_ind.compute(df)
         
-        if len(df) < 4:
+        if len(df) < 5:
             return None
         
-        # Get signals for the LAST 3 COMPLETED candles (exclude current forming candle)
-        # iloc[-1] = current (possibly still forming), iloc[-2] = last closed, iloc[-3] = before that
-        recent = df.iloc[-4:-1]  # 3 most recent COMPLETED candles
+        # Get signals for last 5 COMPLETED candles (exclude current forming = iloc[-1])
+        # Position: [-6]=oldest, [-5], [-4], [-3]=before_pair, [-2]=pair_1, [-1]=current(skip)
+        check = df.iloc[-6:-1]  # 5 completed candles
         labels = []
-        for _, row in recent.iterrows():
+        for _, row in check.iterrows():
             sig = float(row.get("NAU_Signal", 0))
             conf = float(row.get("NAU_Confidence", 0))
             lbl = signal_label(sig, conf)
             labels.append(lbl)
         
-        # Check: last 2 completed candles must both be BUY or both be SELL
-        if len(labels) < 2:
+        if len(labels) < 3:
             return None
         
-        last_two = labels[-2:]  # The 2 most recent completed candles
+        # The 2 most recent COMPLETED candles
+        candle_1 = labels[-1]  # Most recent closed
+        candle_2 = labels[-2]  # Second most recent closed
+        candle_before = labels[-3]  # The candle BEFORE the pair
         
-        # Both must be buy-type or both sell-type
-        both_buy = all("COMPRA" in l for l in last_two)
-        both_sell = all("VENTA" in l for l in last_two)
+        # Both must be same direction (BUY or SELL)
+        both_buy = "COMPRA" in candle_1 and "COMPRA" in candle_2
+        both_sell = "VENTA" in candle_1 and "VENTA" in candle_2
         
         if not both_buy and not both_sell:
             return None
         
         is_buy = both_buy
-        last_label = last_two[-1]
         
-        # Count how many consecutive going back (including the 3rd candle if it matches)
-        consecutive = 2
-        if len(labels) >= 3:
-            third = labels[0]
-            if is_buy and "COMPRA" in third:
-                consecutive = 3
-            elif not is_buy and "VENTA" in third:
-                consecutive = 3
+        # CRITICAL: The candle BEFORE the pair must NOT be the same signal
+        # This ensures we're catching a NEW formation, not an old ongoing trend
+        if is_buy and "COMPRA" in candle_before:
+            return None  # Old buy trend, not new
+        if not is_buy and "VENTA" in candle_before:
+            return None  # Old sell trend, not new
         
-        # Price and SL/TP from current bar
+        # MATCH FOUND — this is a newly formed consecutive signal
         last = df.iloc[-1]
         price = float(last["Close"])
         atr = float(np.mean(df["High"].iloc[-14:].values.astype(float) - df["Low"].iloc[-14:].values.astype(float)))
@@ -552,9 +560,9 @@ def scan_vc_one(sym_info, interval):
                 break
         
         return {
-            "symbol": sym, "name": name, "label": last_label,
+            "symbol": sym, "name": name, "label": candle_1,
             "direction": "LONG" if is_buy else "SHORT",
-            "consecutive": consecutive, "price": round(price, 2),
+            "consecutive": 2, "price": round(price, 2),
             "entry": round(entry, 2), "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
         }
     except Exception:
