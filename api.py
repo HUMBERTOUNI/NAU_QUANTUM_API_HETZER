@@ -581,22 +581,26 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
     try:
         from stock_universe import SP500, NASDAQ_100, DOW_30, RUSSELL_2000_TOP, SP_MIDCAP_400, ADDITIONAL_STOCKS, ETFS, CRYPTO, INDICES, COMMODITIES_FOREX
         
-        # Build curated pages — no duplicates between pages
+        # Build curated pages by investment quality
+        # Tanda 1: Top 200 large-cap + 300 innovative leaders
+        # Tanda 2: Mid-cap with upside (Russell + MidCap)  
+        # Tanda 3: Growth/Value with high potential
+        # Tanda 4: ETFs + Crypto + Indices + remaining
         seen = set()
-        def make_page(lists):
+        def make_page(lists, max_n=500):
             page_syms = []
             for lst in lists:
                 for s in lst:
-                    if s not in seen:
+                    if s not in seen and len(page_syms) < max_n:
                         seen.add(s)
                         page_syms.append({"s": s, "idx": " · ".join(sorted(INDEX_MEMBERSHIP.get(s, {"OTHER"})))})
             return page_syms
         
         pages = {
-            1: make_page([SP500, NASDAQ_100, DOW_30]),
-            2: make_page([RUSSELL_2000_TOP, SP_MIDCAP_400]),
-            3: make_page([ADDITIONAL_STOCKS]),
-            4: make_page([ETFS, CRYPTO, INDICES, COMMODITIES_FOREX]),
+            1: make_page([SP500, NASDAQ_100, DOW_30], 500),
+            2: make_page([RUSSELL_2000_TOP, SP_MIDCAP_400], 500),
+            3: make_page([ADDITIONAL_STOCKS], 500),
+            4: make_page([ETFS, CRYPTO, INDICES, COMMODITIES_FOREX], 500),
         }
         total_pages = len(pages)
         
