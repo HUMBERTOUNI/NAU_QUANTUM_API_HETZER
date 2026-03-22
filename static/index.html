@@ -111,10 +111,10 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 /* ═══ SCANNER MODAL ═══ */
 #scannerModal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;background:rgba(0,0,0,.6);justify-content:center;align-items:center}
 #scannerModal.show{display:flex}
-#scannerContent{background:var(--bg2);border:1px solid var(--bg4);border-radius:12px;width:900px;max-width:95vw;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.6)}
-#scannerHeader{padding:16px 20px;border-bottom:1px solid var(--bg4);display:flex;justify-content:space-between;align-items:center}
+#scannerContent{background:var(--bg2);border:1px solid var(--bg4);border-radius:12px;width:900px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.6)}
+#scannerHeader{padding:16px 20px;border-bottom:1px solid var(--bg4);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
 #scannerHeader h2{color:var(--cyan);font-size:16px}
-#scannerBody{flex:1;overflow-y:auto;overflow-x:auto;padding:0;-webkit-overflow-scrolling:touch}
+#scannerBody{flex:1;overflow:auto;padding:0;-webkit-overflow-scrolling:touch;min-height:0}
 #scannerTable{width:100%;border-collapse:collapse;min-width:800px}
 #scannerTable th{position:sticky;top:0;background:var(--bg3);padding:8px 10px;text-align:left;font-size:11px;color:var(--text2);text-transform:uppercase;border-bottom:1px solid var(--bg4)}
 #scannerTable td{padding:8px 10px;border-bottom:1px solid var(--bg);font-size:12px}
@@ -306,8 +306,8 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 
 <!-- ═══ SEÑAL V/C MODAL ═══ -->
 <div id="vcModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;background:rgba(0,0,0,.6);justify-content:center;align-items:center">
-  <div style="background:var(--bg2);border:1px solid var(--bg4);border-radius:12px;width:950px;max-width:95vw;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.6)">
-    <div style="padding:16px 20px;border-bottom:1px solid var(--bg4);display:flex;justify-content:space-between;align-items:center">
+  <div style="background:var(--bg2);border:1px solid var(--bg4);border-radius:12px;width:950px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.6)">
+    <div style="padding:16px 20px;border-bottom:1px solid var(--bg4);display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
       <h2 style="color:var(--gold)">⚡ Señales Consecutivas V/C</h2>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span style="font-size:12px;color:var(--text2)">Busca 2+ señales consecutivas en últimas velas cerradas</span>
@@ -322,7 +322,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
         <button id="closeVCBtn" style="font-size:20px;padding:0 8px">✕</button>
       </div>
     </div>
-    <div id="vcBody" style="flex:1;overflow-y:auto;overflow-x:auto;padding:0;-webkit-overflow-scrolling:touch">
+    <div id="vcBody" style="flex:1;overflow:auto;padding:0;-webkit-overflow-scrolling:touch;min-height:0">
       <div id="vcLoading" style="display:none;padding:40px;text-align:center">
         <div style="font-size:14px;margin-bottom:8px">⚡ Buscando señales consecutivas...</div>
         <div style="color:var(--text3)">Escaneando 500 acciones principales. Esto puede tomar 8-12 minutos.</div>
@@ -378,7 +378,17 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
       <label>Color Stop Loss <input type="color" id="setSLColor" value="#ef5350"></label>
       <label>Color Take Profit <input type="color" id="setTPColor" value="#26a69a"></label>
       <label>Tamaño texto señales <select id="setSignalSize"><option value="10">Pequeño</option><option value="12" selected>Normal</option><option value="14">Grande</option><option value="16">Muy Grande</option><option value="18">Extra Grande</option></select></label>
-      <label>Grosor líneas indicadores <select id="setLineWidth"><option value="1" selected>Fino</option><option value="2">Normal</option><option value="3">Grueso</option></select></label>
+    </div>
+    <div class="setting-group">
+      <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Grosor de Líneas (por indicador)</h3>
+      <label>Kalman <select id="setWidthKalman"><option value="1">Fino</option><option value="2" selected>Normal</option><option value="3">Grueso</option><option value="4">Extra</option></select></label>
+      <label>VWAP <select id="setWidthVwap"><option value="1" selected>Fino</option><option value="2">Normal</option><option value="3">Grueso</option></select></label>
+      <label>EMA 9 <select id="setWidthEma9"><option value="1" selected>Fino</option><option value="2">Normal</option><option value="3">Grueso</option></select></label>
+      <label>EMA 21 <select id="setWidthEma21"><option value="1" selected>Fino</option><option value="2">Normal</option><option value="3">Grueso</option></select></label>
+      <label>EMA 50 <select id="setWidthEma50"><option value="1">Fino</option><option value="2" selected>Normal</option><option value="3">Grueso</option></select></label>
+      <label>EMA 200 <select id="setWidthEma200"><option value="1">Fino</option><option value="2" selected>Normal</option><option value="3">Grueso</option><option value="4">Extra</option></select></label>
+      <label>SMA 20 <select id="setWidthSma20"><option value="1" selected>Fino</option><option value="2">Normal</option><option value="3">Grueso</option></select></label>
+      <label>Bollinger <select id="setWidthBB"><option value="1" selected>Fino</option><option value="2">Normal</option><option value="3">Grueso</option></select></label>
     </div>
     <div class="setting-group">
       <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Velas Post-Market</h3>
@@ -855,15 +865,15 @@ function renderOverlays() {
   const bars = chartData.bars;
   const c = getColors();
 
-  const lw = c.lineWidth || 1;
+  const lw = 1;  // unused now, each has its own
   const overlayConfig = {
-    kalman: { key: 'NAU_Kalman', color: c.kalman, width: lw + 1 },
-    vwap: { key: 'VWAP', color: c.vwap, width: lw },
-    ema9: { key: 'EMA_9', color: c.ema9, width: lw },
-    ema21: { key: 'EMA_21', color: c.ema21, width: lw },
-    ema50: { key: 'EMA_50', color: c.ema50, width: lw },
-    ema200: { key: 'EMA_200', color: c.ema200, width: lw + 1 },
-    sma20: { key: 'SMA_20', color: '#ffeb3b', width: lw },
+    kalman: { key: 'NAU_Kalman', color: c.kalman, width: c.wKalman },
+    vwap: { key: 'VWAP', color: c.vwap, width: c.wVwap },
+    ema9: { key: 'EMA_9', color: c.ema9, width: c.wEma9 },
+    ema21: { key: 'EMA_21', color: c.ema21, width: c.wEma21 },
+    ema50: { key: 'EMA_50', color: c.ema50, width: c.wEma50 },
+    ema200: { key: 'EMA_200', color: c.ema200, width: c.wEma200 },
+    sma20: { key: 'SMA_20', color: '#ffeb3b', width: c.wSma20 },
   };
 
   for (const [ind, cfg] of Object.entries(overlayConfig)) {
@@ -882,9 +892,9 @@ function renderOverlays() {
     const lower = bars.filter(b => b.BB_lower).map(b => ({ time: b.time, value: b.BB_lower }));
     const bbCol = c.bb + '80';
     if (upper.length > 0) {
-      overlaySeries.bb_upper = mainChart.addLineSeries({ color: c.bb, lineWidth: 1, priceScaleId: 'right', lastValueVisible: false, priceLineVisible: false });
+      overlaySeries.bb_upper = mainChart.addLineSeries({ color: c.bb, lineWidth: c.wBB, priceScaleId: 'right', lastValueVisible: false, priceLineVisible: false });
       overlaySeries.bb_upper.setData(upper);
-      overlaySeries.bb_lower = mainChart.addLineSeries({ color: c.bb, lineWidth: 1, priceScaleId: 'right', lastValueVisible: false, priceLineVisible: false });
+      overlaySeries.bb_lower = mainChart.addLineSeries({ color: c.bb, lineWidth: c.wBB, priceScaleId: 'right', lastValueVisible: false, priceLineVisible: false });
       overlaySeries.bb_lower.setData(lower);
     }
   }
@@ -1064,7 +1074,10 @@ function getColors() {
     entry: s.entryColor || '#2962ff', sl: s.slColor || '#ef5350', tp: s.tpColor || '#26a69a',
     signalBuy: s.signalBuyColor || '#26a69a', signalSell: s.signalSellColor || '#ef5350',
     signalSize: parseInt(s.signalSize) || 12,
-    lineWidth: parseInt(s.lineWidth) || 1,
+    wKalman: parseInt(s.wKalman) || 2, wVwap: parseInt(s.wVwap) || 1,
+    wEma9: parseInt(s.wEma9) || 1, wEma21: parseInt(s.wEma21) || 1,
+    wEma50: parseInt(s.wEma50) || 2, wEma200: parseInt(s.wEma200) || 2,
+    wSma20: parseInt(s.wSma20) || 1, wBB: parseInt(s.wBB) || 1,
     extBull: s.extBullColor || '#1a3a35', extBear: s.extBearColor || '#3a1a1a',
     extOpacity: parseInt(s.extOpacity) || 35,
   };
@@ -1087,7 +1100,14 @@ function loadSettingsUI() {
   document.getElementById('setSignalBuyColor').value = c.signalBuy;
   document.getElementById('setSignalSellColor').value = c.signalSell;
   document.getElementById('setSignalSize').value = String(c.signalSize);
-  document.getElementById('setLineWidth').value = String(c.lineWidth);
+  document.getElementById('setWidthKalman').value = String(c.wKalman);
+  document.getElementById('setWidthVwap').value = String(c.wVwap);
+  document.getElementById('setWidthEma9').value = String(c.wEma9);
+  document.getElementById('setWidthEma21').value = String(c.wEma21);
+  document.getElementById('setWidthEma50').value = String(c.wEma50);
+  document.getElementById('setWidthEma200').value = String(c.wEma200);
+  document.getElementById('setWidthSma20').value = String(c.wSma20);
+  document.getElementById('setWidthBB').value = String(c.wBB);
   document.getElementById('setExtBullColor').value = c.extBull;
   document.getElementById('setExtBearColor').value = c.extBear;
   document.getElementById('setExtOpacity').value = String(c.extOpacity);
@@ -1110,7 +1130,14 @@ document.getElementById('applySettings').onclick = () => {
   state.settings.signalBuyColor = document.getElementById('setSignalBuyColor').value;
   state.settings.signalSellColor = document.getElementById('setSignalSellColor').value;
   state.settings.signalSize = document.getElementById('setSignalSize').value;
-  state.settings.lineWidth = document.getElementById('setLineWidth').value;
+  state.settings.wKalman = document.getElementById('setWidthKalman').value;
+  state.settings.wVwap = document.getElementById('setWidthVwap').value;
+  state.settings.wEma9 = document.getElementById('setWidthEma9').value;
+  state.settings.wEma21 = document.getElementById('setWidthEma21').value;
+  state.settings.wEma50 = document.getElementById('setWidthEma50').value;
+  state.settings.wEma200 = document.getElementById('setWidthEma200').value;
+  state.settings.wSma20 = document.getElementById('setWidthSma20').value;
+  state.settings.wBB = document.getElementById('setWidthBB').value;
   state.settings.extBullColor = document.getElementById('setExtBullColor').value;
   state.settings.extBearColor = document.getElementById('setExtBearColor').value;
   state.settings.extOpacity = document.getElementById('setExtOpacity').value;
