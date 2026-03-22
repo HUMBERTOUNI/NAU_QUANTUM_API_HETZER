@@ -114,8 +114,8 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 #scannerContent{background:var(--bg2);border:1px solid var(--bg4);border-radius:12px;width:900px;max-width:95vw;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.6)}
 #scannerHeader{padding:16px 20px;border-bottom:1px solid var(--bg4);display:flex;justify-content:space-between;align-items:center}
 #scannerHeader h2{color:var(--cyan);font-size:16px}
-#scannerBody{flex:1;overflow-y:auto;padding:0}
-#scannerTable{width:100%;border-collapse:collapse}
+#scannerBody{flex:1;overflow-y:auto;overflow-x:auto;padding:0;-webkit-overflow-scrolling:touch}
+#scannerTable{width:100%;border-collapse:collapse;min-width:800px}
 #scannerTable th{position:sticky;top:0;background:var(--bg3);padding:8px 10px;text-align:left;font-size:11px;color:var(--text2);text-transform:uppercase;border-bottom:1px solid var(--bg4)}
 #scannerTable td{padding:8px 10px;border-bottom:1px solid var(--bg);font-size:12px}
 #scannerTable tr:hover td{background:var(--bg3)}
@@ -312,23 +312,23 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span style="font-size:12px;color:var(--text2)">Busca 2+ señales consecutivas en últimas velas cerradas</span>
         <select id="vcPageSelect" style="padding:4px 8px;border-radius:4px;background:var(--bg3);border:1px solid var(--bg4);color:var(--text);font-size:12px">
-          <option value="1">Tanda 1 (1-500)</option>
-          <option value="2">Tanda 2 (501-1000)</option>
-          <option value="3">Tanda 3 (1001-1500)</option>
-          <option value="4">Tanda 4 (1501-2000+)</option>
+          <option value="1">Tanda 1: S&P500 + NASDAQ + DOW</option>
+          <option value="2">Tanda 2: Russell 2000 + MidCap</option>
+          <option value="3">Tanda 3: Growth / Value</option>
+          <option value="4">Tanda 4: ETFs + Crypto + Índices</option>
         </select>
         <button id="runVCBtn" style="background:var(--gold);color:#000;padding:6px 16px;border-radius:4px;font-weight:600">⚡ Buscar</button>
         <button id="downloadVCBtn" style="background:var(--green);color:#fff;padding:4px 12px;border-radius:4px;font-size:12px;display:none">📥 Excel</button>
         <button id="closeVCBtn" style="font-size:20px;padding:0 8px">✕</button>
       </div>
     </div>
-    <div id="vcBody" style="flex:1;overflow-y:auto;padding:0">
+    <div id="vcBody" style="flex:1;overflow-y:auto;overflow-x:auto;padding:0;-webkit-overflow-scrolling:touch">
       <div id="vcLoading" style="display:none;padding:40px;text-align:center">
         <div style="font-size:14px;margin-bottom:8px">⚡ Buscando señales consecutivas...</div>
         <div style="color:var(--text3)">Escaneando 500 acciones principales. Esto puede tomar 8-12 minutos.</div>
         <div style="color:var(--text3);margin-top:4px">No cierres esta ventana. Los datos serán precisos y confiables.</div>
       </div>
-      <table id="vcTable" style="width:100%;border-collapse:collapse">
+      <table id="vcTable" style="width:100%;border-collapse:collapse;min-width:700px">
         <thead><tr style="position:sticky;top:0;background:var(--bg3)">
           <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)">ACCIÓN</th>
           <th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--text2)">NOMBRE</th>
