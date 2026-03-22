@@ -455,18 +455,13 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
 # Feature 4: Consecutive Signal Scanner (Señal V/C)
 def scan_vc_one(sym_info, interval):
     """
-    Detect NEWLY FORMED consecutive signals.
+    Find stocks where the ONLY 2 consecutive signals are the most recent ones.
     
-    Rule:
-    - Take last 5 COMPLETED candles (exclude current forming candle)
-    - The 2 most recent closed candles MUST both have BUY or both have SELL signal
-    - The candle BEFORE those 2 must be NEUTRAL or OPPOSITE direction
-    - This ensures we only catch NEW trend formations, not ongoing old trends
-    
-    Example (reading right to left, most recent first):
-      [NEUTRAL] [NEUTRAL] [VENTA] [VENTA] [current] → MATCH (new sell trend)
-      [COMPRA]  [VENTA]   [VENTA] [VENTA] [current] → NO MATCH (3rd venta before = old trend)
-      [NEUTRAL] [COMPRA]  [COMPRA] [current]         → MATCH (new buy trend)
+    Algorithm:
+    1. Get signals for last 20 completed candles
+    2. Scan from most recent backward to find the first pair of consecutive BUY or SELL
+    3. Check ALL candles before that pair — if ANY has the same signal type → REJECT
+    4. This ensures we catch ONLY the start of a new trend
     """
     sym = sym_info["s"]
     try:
@@ -504,14 +499,15 @@ def scan_vc_one(sym_info, interval):
         local_ind = NAUQuantumAlphaIndicator()
         df = local_ind.compute(df)
         
-        if len(df) < 5:
+        if len(df) < 10:
             return None
         
-        # Get signals for last 5 COMPLETED candles (exclude current forming = iloc[-1])
-        # Position: [-6]=oldest, [-5], [-4], [-3]=before_pair, [-2]=pair_1, [-1]=current(skip)
-        check = df.iloc[-6:-1]  # 5 completed candles
+        # Get signals for last 20 COMPLETED candles (exclude current forming = iloc[-1])
+        n_check = min(20, len(df) - 1)
+        completed = df.iloc[-(n_check+1):-1]  # Last N completed candles
+        
         labels = []
-        for _, row in check.iterrows():
+        for _, row in completed.iterrows():
             sig = float(row.get("NAU_Signal", 0))
             conf = float(row.get("NAU_Confidence", 0))
             lbl = signal_label(sig, conf)
@@ -520,30 +516,38 @@ def scan_vc_one(sym_info, interval):
         if len(labels) < 3:
             return None
         
-        # The 2 most recent COMPLETED candles
-        candle_1 = labels[-1]  # Most recent closed
-        candle_2 = labels[-2]  # Second most recent closed
-        candle_before = labels[-3]  # The candle BEFORE the pair
+        # Step 1: Check if the 2 most recent completed candles form a pair
+        last = labels[-1]
+        second_last = labels[-2]
         
-        # Both must be same direction (BUY or SELL)
-        both_buy = "COMPRA" in candle_1 and "COMPRA" in candle_2
-        both_sell = "VENTA" in candle_1 and "VENTA" in candle_2
+        if last == "NEUTRAL" or second_last == "NEUTRAL":
+            return None
+        
+        # Both must be same direction
+        last_is_buy = "COMPRA" in last
+        second_is_buy = "COMPRA" in second_last
+        last_is_sell = "VENTA" in last
+        second_is_sell = "VENTA" in second_last
+        
+        both_buy = last_is_buy and second_is_buy
+        both_sell = last_is_sell and second_is_sell
         
         if not both_buy and not both_sell:
             return None
         
         is_buy = both_buy
         
-        # CRITICAL: The candle BEFORE the pair must NOT be the same signal
-        # This ensures we're catching a NEW formation, not an old ongoing trend
-        if is_buy and "COMPRA" in candle_before:
-            return None  # Old buy trend, not new
-        if not is_buy and "VENTA" in candle_before:
-            return None  # Old sell trend, not new
+        # Step 2: Check ALL candles BEFORE the pair — NONE should have the same signal type
+        history = labels[:-2]  # Everything before the pair
+        for h_label in history:
+            if is_buy and "COMPRA" in h_label:
+                return None  # Old buy signal exists → not a new trend
+            if not is_buy and "VENTA" in h_label:
+                return None  # Old sell signal exists → not a new trend
         
-        # MATCH FOUND — this is a newly formed consecutive signal
-        last = df.iloc[-1]
-        price = float(last["Close"])
+        # MATCH: These are the FIRST 2 consecutive signals of this type = new trend start
+        current = df.iloc[-1]
+        price = float(current["Close"])
         atr = float(np.mean(df["High"].iloc[-14:].values.astype(float) - df["Low"].iloc[-14:].values.astype(float)))
         
         if is_buy:
@@ -560,7 +564,7 @@ def scan_vc_one(sym_info, interval):
                 break
         
         return {
-            "symbol": sym, "name": name, "label": candle_1,
+            "symbol": sym, "name": name, "label": last,
             "direction": "LONG" if is_buy else "SHORT",
             "consecutive": 2, "price": round(price, 2),
             "entry": round(entry, 2), "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
