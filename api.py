@@ -531,14 +531,14 @@ def scan_vc_one(sym_info, interval):
         
         is_buy = both_buy
         
-        # Step 2: Check ENTIRE history before the pair
-        # NO candle in ALL prior history should have the same signal type
-        history = all_labels[:-2]
-        for h_label in history:
-            if is_buy and "COMPRA" in h_label:
-                return None  # Old buy exists anywhere in history
-            if not is_buy and "VENTA" in h_label:
-                return None  # Old sell exists anywhere in history
+        # Step 2: Check the RECENT window (last 15 completed candles)
+        # The pair (last 2) must be the ONLY signals in this window
+        # All other candles in the window must be NEUTRAL (no buy, no sell)
+        recent_window = all_labels[-15:] if len(all_labels) >= 15 else all_labels
+        before_pair = recent_window[:-2]  # Everything except the pair
+        for h_label in before_pair:
+            if "COMPRA" in h_label or "VENTA" in h_label:
+                return None  # Any signal in recent window before pair → discard
         
         # MATCH: These are the FIRST 2 consecutive signals of this type = new trend start
         current = df.iloc[-1]
