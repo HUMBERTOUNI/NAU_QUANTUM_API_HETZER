@@ -81,11 +81,11 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 .ind-toggle:hover{border-color:var(--text3)}
 
 /* ═══ MAIN LAYOUT ═══ */
-#main{display:flex;height:calc(100vh - 116px)}
+#main{display:flex;height:calc(100vh - 116px);overflow:hidden}
 #chartArea{flex:1;display:flex;flex-direction:column;min-width:0}
-#chartContainer{flex:1;position:relative;min-height:0}
-#signalPanel{height:120px;border-top:1px solid var(--bg4)}
-#factorPanel{height:80px;border-top:1px solid var(--bg4)}
+#chartContainer{flex:1;position:relative;min-height:200px}
+#signalPanel{height:100px;border-top:1px solid var(--bg4);flex-shrink:0}
+#factorPanel{height:60px;border-top:1px solid var(--bg4);flex-shrink:0}
 
 /* ═══ SIDE PANELS ═══ */
 #watchlistPanel{width:220px;background:var(--bg2);border-left:1px solid var(--bg4);display:flex;flex-direction:column;overflow:hidden}
@@ -139,20 +139,34 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 
 /* ═══ RESPONSIVE ═══ */
 @media(max-width:768px){
-  #topBar{flex-wrap:wrap;height:auto;padding:4px}
+  #topBar{flex-wrap:wrap;height:auto;padding:4px;gap:2px}
   #searchWrap{width:100%;order:10}
-  #tfBar{flex-wrap:wrap}
-  #watchlistPanel{width:180px}
+  #tfBar{flex-wrap:wrap;gap:1px}
+  .tf-btn{padding:3px 5px;font-size:11px}
+  #watchlistPanel{display:none!important}
   #priceDisplay{margin:0 4px}
   .tool-btn span{display:none}
-  #decisionBar{flex-wrap:wrap;height:auto;font-size:11px}
-  #indicatorBar{font-size:10px}
-  #signalPanel{height:60px!important}
-  #factorPanel{height:40px!important}
-  #main{height:calc(100vh - 90px)}
-  #chartContainer{min-height:250px}
+  #decisionBar{flex-wrap:wrap;height:auto;padding:4px 8px;gap:6px;font-size:11px}
+  #indicatorBar{font-size:10px;gap:4px;padding:2px 8px}
+  .ind-toggle{padding:2px 5px;font-size:10px}
+  #signalPanel{height:50px!important}
+  #factorPanel{height:30px!important}
+  #main{height:calc(100vh - 80px);overflow:hidden}
+  #chartContainer{min-height:300px;flex:1}
   #logo span{display:none}
-  #logo{font-size:12px}
+  #logo{font-size:11px;padding:0 4px}
+  #analysisBtn{font-size:10px;padding:2px 8px}
+  #sltpToggle{font-size:10px}
+  .dec-item{font-size:10px}
+  #rightTools{gap:2px}
+}
+@media(max-width:480px){
+  #decisionBar{display:none}
+  #indicatorBar{display:none}
+  #main{height:calc(100vh - 50px)}
+  #signalPanel{height:40px!important}
+  #factorPanel{display:none!important}
+  .tf-btn{padding:2px 4px;font-size:10px}
 }
 </style>
 </head>
@@ -649,7 +663,7 @@ function initCharts() {
   volumeSeries = mainChart.addHistogramSeries({
     priceFormat: { type: 'volume' }, priceScaleId: 'volume',
   });
-  mainChart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+  mainChart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.9, bottom: 0 } });
 
   // Signal panel
   signalChart = LightweightCharts.createChart(signalCont, {
