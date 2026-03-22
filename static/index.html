@@ -16,7 +16,7 @@
   --blue:#2962ff;--purple:#ab47bc;--orange:#ff9800;
   --bull:var(--green);--bear:var(--red);
 }
-html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;font-size:13px;overflow:hidden}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;font-size:13px;overflow:hidden;display:flex;flex-direction:column}
 button{background:none;border:none;color:var(--text);cursor:pointer;font-family:inherit;font-size:12px}
 button:hover{color:#fff}
 input,select{background:var(--bg3);border:1px solid var(--bg4);color:var(--text);border-radius:4px;padding:4px 8px;font-size:12px;font-family:inherit}
@@ -81,9 +81,9 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 .ind-toggle:hover{border-color:var(--text3)}
 
 /* ═══ MAIN LAYOUT ═══ */
-#main{display:flex;height:calc(100vh - 116px);overflow:hidden}
-#chartArea{flex:1;display:flex;flex-direction:column;min-width:0}
-#chartContainer{flex:1;position:relative;min-height:200px}
+#main{display:flex;flex:1;overflow:hidden}
+#chartArea{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+#chartContainer{flex:1;position:relative;min-height:200px;touch-action:none}
 #signalPanel{height:100px;border-top:1px solid var(--bg4);flex-shrink:0}
 #factorPanel{height:60px;border-top:1px solid var(--bg4);flex-shrink:0}
 
@@ -140,33 +140,40 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 /* ═══ RESPONSIVE ═══ */
 @media(max-width:768px){
   #topBar{flex-wrap:wrap;height:auto;padding:4px;gap:2px}
-  #searchWrap{width:100%;order:10}
+  #searchWrap{width:calc(100% - 16px);order:10;margin:2px 0}
   #tfBar{flex-wrap:wrap;gap:1px}
-  .tf-btn{padding:3px 5px;font-size:11px}
+  .tf-btn{padding:3px 5px;font-size:10px}
   #watchlistPanel{display:none!important}
-  #priceDisplay{margin:0 4px}
+  #priceDisplay{margin:0 4px;font-size:12px}
   .tool-btn span{display:none}
-  #decisionBar{flex-wrap:wrap;height:auto;padding:4px 8px;gap:6px;font-size:11px}
-  #indicatorBar{font-size:10px;gap:4px;padding:2px 8px}
-  .ind-toggle{padding:2px 5px;font-size:10px}
-  #signalPanel{height:50px!important}
-  #factorPanel{height:30px!important}
-  #main{height:calc(100vh - 80px);overflow:hidden}
-  #chartContainer{min-height:300px;flex:1}
+  .tool-btn{padding:4px 6px}
+  #decisionBar{flex-wrap:wrap;height:auto;padding:4px 8px;gap:4px;font-size:10px}
+  #indicatorBar{font-size:9px;gap:3px;padding:2px 6px}
+  .ind-toggle{padding:2px 4px;font-size:9px}
+  #signalPanel{height:40px!important;flex-shrink:0}
+  #factorPanel{display:none!important}
+  #main{flex:1;overflow:hidden}
+  #chartArea{min-height:0}
+  #chartContainer{flex:1;min-height:0;touch-action:none}
   #logo span{display:none}
-  #logo{font-size:11px;padding:0 4px}
-  #analysisBtn{font-size:10px;padding:2px 8px}
-  #sltpToggle{font-size:10px}
-  .dec-item{font-size:10px}
-  #rightTools{gap:2px}
+  #logo{font-size:10px;padding:0 2px}
+  #analysisBtn{font-size:9px;padding:2px 6px}
+  #sltpToggle{font-size:9px;padding:2px 4px}
+  .dec-item{font-size:9px}
+  #rightTools{gap:1px}
+  #currentPrice{font-size:14px!important}
+  #priceChange{font-size:10px!important}
 }
 @media(max-width:480px){
   #decisionBar{display:none}
   #indicatorBar{display:none}
-  #main{height:calc(100vh - 50px)}
-  #signalPanel{height:40px!important}
-  #factorPanel{display:none!important}
-  .tf-btn{padding:2px 4px;font-size:10px}
+  #signalPanel{display:none!important}
+  #topBar{padding:2px}
+  .tf-btn{padding:2px 3px;font-size:9px}
+  #searchWrap{margin:0}
+  #searchInput{font-size:12px;padding:4px 8px 4px 24px}
+  #logo{display:none}
+  #chartContainer{touch-action:none}
 }
 </style>
 </head>
