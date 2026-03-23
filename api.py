@@ -690,121 +690,177 @@ def generate_report(section: str = Query("all")):
         return {"error": str(e), "html": ""}
 
 
-# ═══ REPORT HELPER FUNCTIONS ═══
+# ═══ REPORT HELPER FUNCTIONS (Professional) ═══
 
-def _get_stock_data(symbols, period="1mo"):
-    """Download data for multiple symbols efficiently."""
+REPORT_CSS = """
+<style>
+.rpt-table{border-collapse:collapse;width:100%;margin:16px 0;font-size:12px}
+.rpt-table th{background:#1a2332;color:#00bcd4;padding:10px 12px;text-align:left;border:1px solid #2a3a4a;font-size:11px;text-transform:uppercase;letter-spacing:0.5px}
+.rpt-table td{padding:8px 12px;border:1px solid #1a2a3a;vertical-align:top}
+.rpt-table tr:nth-child(even){background:rgba(255,255,255,0.02)}
+.rpt-table tr:hover{background:rgba(0,188,212,0.05)}
+.up{color:#26a69a;font-weight:600}.down{color:#ef5350;font-weight:600}
+.neutral{color:#ff9800}
+.rpt-section{margin:30px 0;padding:20px;background:rgba(255,255,255,0.02);border-radius:8px;border-left:4px solid #00bcd4}
+.rpt-section h2{color:#00bcd4;margin:0 0 12px 0;font-size:18px}
+.rpt-section h3{color:#ff9800;margin:16px 0 8px 0;font-size:14px}
+.rpt-narrative{color:#ccc;line-height:1.7;margin:12px 0}
+.rpt-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600}
+.badge-bull{background:#1b5e20;color:#66bb6a}.badge-bear{background:#b71c1c;color:#ef9a9a}
+.badge-neutral{background:#4e342e;color:#ffab40}
+.rpt-highlight{background:rgba(0,188,212,0.1);padding:12px;border-radius:6px;margin:12px 0;border:1px solid rgba(0,188,212,0.2)}
+.rpt-footer{font-size:10px;color:#666;margin-top:8px;font-style:italic}
+</style>
+"""
+
+def _safe_get_data(symbols, period="1mo"):
+    """Get price data for a list of symbols."""
     results = {}
     for sym in symbols:
         try:
             with _download_lock:
-                t = yf.Ticker(sym)
-                hist = t.history(period=period)
-                info = {}
-                try: info = t.fast_info
-                except: pass
+                hist = yf.download(sym, period=period, interval="1d", progress=False, auto_adjust=True)
             if hist is not None and not hist.empty and len(hist) >= 2:
-                results[sym] = {"hist": hist, "info": info}
+                if isinstance(hist.columns, pd.MultiIndex):
+                    hist.columns = hist.columns.get_level_values(0)
+                results[sym] = hist
         except:
             pass
     return results
 
+def _calc_rsi(close_arr, period=14):
+    d = pd.Series(close_arr).diff()
+    g = d.where(d>0,0).rolling(period).mean().iloc[-1]
+    l = (-d.where(d<0,0)).rolling(period).mean().iloc[-1]
+    return round(100 - 100/(1+g/(l+1e-10)), 1)
+
+def _calc_emas(close_arr):
+    s = pd.Series(close_arr)
+    return {
+        "ema9": round(s.ewm(span=9).mean().iloc[-1], 2),
+        "ema21": round(s.ewm(span=21).mean().iloc[-1], 2),
+        "ema50": round(s.ewm(span=50).mean().iloc[-1], 2) if len(s) >= 50 else None,
+        "ema200": round(s.ewm(span=200).mean().iloc[-1], 2) if len(s) >= 200 else None,
+    }
+
+def _get_name(sym):
+    for s in SYMBOLS_DB:
+        if s["s"] == sym: return s["n"]
+    return sym
+
+def _trend_text(pct):
+    if pct > 5: return '<span class="badge-bull rpt-badge">FUERTE ALCISTA</span>'
+    if pct > 1: return '<span class="badge-bull rpt-badge">ALCISTA</span>'
+    if pct < -5: return '<span class="badge-bear rpt-badge">FUERTE BAJISTA</span>'
+    if pct < -1: return '<span class="badge-bear rpt-badge">BAJISTA</span>'
+    return '<span class="badge-neutral rpt-badge">LATERAL</span>'
+
+def _rsi_text(rsi):
+    if rsi > 70: return f'<span class="down">RSI {rsi} — SOBRECOMPRA</span>'
+    if rsi > 60: return f'<span class="neutral">RSI {rsi} — Zona alta</span>'
+    if rsi < 30: return f'<span class="up">RSI {rsi} — SOBREVENTA</span>'
+    if rsi < 40: return f'<span class="neutral">RSI {rsi} — Zona baja</span>'
+    return f'RSI {rsi} — Neutral'
+
 
 def report_top_performers_4weeks():
-    """Section 1: Top 20 stocks with best performance in last 4 weeks."""
-    # Scan SP500 + top stocks for 4-week performance
-    candidates = SP500[:200] + NASDAQ_100[:50]
-    seen = set()
-    unique = []
-    for s in candidates:
-        if s not in seen:
-            seen.add(s)
-            unique.append(s)
+    candidates = list(dict.fromkeys(SP500[:200] + NASDAQ_100[:50]))
+    data = _safe_get_data(candidates[:150], "2mo")
     
     performers = []
-    for sym in unique[:150]:
-        try:
-            with _download_lock:
-                hist = yf.download(sym, period="2mo", interval="1d", progress=False, auto_adjust=True)
-            if hist is None or hist.empty or len(hist) < 20:
-                continue
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-            price_now = float(hist["Close"].iloc[-1])
-            price_4wk = float(hist["Close"].iloc[-20]) if len(hist) >= 20 else float(hist["Close"].iloc[0])
-            pct = ((price_now - price_4wk) / price_4wk) * 100
-            performers.append({"sym": sym, "price": price_now, "price_4wk": price_4wk, "pct": pct})
-        except:
-            pass
+    for sym, hist in data.items():
+        c = hist["Close"].values.astype(float)
+        if len(c) < 20: continue
+        price = c[-1]
+        price_4wk = c[-20]
+        pct = ((price - price_4wk) / price_4wk) * 100
+        rsi = _calc_rsi(c)
+        vol_now = float(hist["Volume"].iloc[-5:].mean())
+        vol_avg = float(hist["Volume"].iloc[-20:].mean())
+        vol_ratio = vol_now / max(vol_avg, 1)
+        emas = _calc_emas(c)
+        performers.append({"sym":sym,"price":price,"price_4wk":price_4wk,"pct":pct,"rsi":rsi,"vol_ratio":vol_ratio,"emas":emas})
     
     performers.sort(key=lambda x: x["pct"], reverse=True)
-    top20 = performers[:20]
+    top = performers[:20]
     
     rows = ""
-    for i, p in enumerate(top20):
-        name = p["sym"]
-        for s in SYMBOLS_DB:
-            if s["s"] == p["sym"]:
-                name = s["n"]
-                break
-        color = "up" if p["pct"] > 0 else "down"
-        rows += f'<tr><td>{i+1}</td><td><b>{p["sym"]}</b></td><td>{name}</td><td class="{color}">{p["pct"]:+.2f}%</td><td>${p["price"]:.2f}</td><td>${p["price_4wk"]:.2f}</td></tr>'
+    for i, p in enumerate(top):
+        name = _get_name(p["sym"])
+        cls = "up" if p["pct"] > 0 else "down"
+        ema_analysis = ""
+        if p["emas"]["ema50"]:
+            if p["price"] > p["emas"]["ema50"] > p["emas"]["ema200"] if p["emas"]["ema200"] else True:
+                ema_analysis = "Precio sobre EMAs — estructura alcista"
+            else:
+                ema_analysis = "Precio bajo EMAs — precaución"
+        
+        analysis = f'{_trend_text(p["pct"])} | {_rsi_text(p["rsi"])} | Vol: {p["vol_ratio"]:.1f}x promedio'
+        if p["rsi"] > 70: analysis += ' | ⚠️ Riesgo de corrección por sobrecompra'
+        if p["vol_ratio"] > 1.5: analysis += ' | ✅ Volumen confirma movimiento'
+        
+        rows += f"""<tr><td>{i+1}</td><td><b>{p["sym"]}</b></td><td>{name}</td>
+        <td class="{cls}"><b>{p["pct"]:+.2f}%</b></td><td>${p["price"]:.2f}</td><td>${p["price_4wk"]:.2f}</td>
+        <td style="font-size:11px">{analysis}</td></tr>"""
     
-    return f"""<h2>📈 1. Top 20 Acciones — Mejor Rendimiento Últimas 4 Semanas</h2>
-<p>Periodo: últimas 20 sesiones | Fuente: Yahoo Finance | {len(performers)} acciones analizadas</p>
-<table><thead><tr><th>#</th><th>Ticker</th><th>Nombre</th><th>Variación 4 sem</th><th>Precio Actual</th><th>Precio hace 4 sem</th></tr></thead>
-<tbody>{rows}</tbody></table>"""
+    return REPORT_CSS + f"""<div class="rpt-section">
+<h2>📈 1. Top 20 Acciones — Mejor Rendimiento Últimas 4 Semanas</h2>
+<p class="rpt-narrative">Análisis de las {len(performers)} acciones más importantes del mercado estadounidense (S&P 500 + NASDAQ 100).
+Se identificaron las 20 con mayor incremento porcentual en las últimas 20 sesiones bursátiles.
+El análisis incluye evaluación técnica de RSI, volumen relativo y posición respecto a medias móviles.</p>
+<table class="rpt-table"><thead><tr>
+<th>#</th><th>Ticker</th><th>Nombre</th><th>Var. 4 sem</th><th>Precio Actual</th><th>Precio 4 sem</th><th>Análisis Técnico</th>
+</tr></thead><tbody>{rows}</tbody></table>
+<p class="rpt-footer">Fuente: Yahoo Finance | {len(performers)} acciones analizadas | Periodo: 20 sesiones</p>
+</div>"""
 
 
 def report_top_performers_4days():
-    """Section 2: Top 10 stocks with best performance in last 4 trading days."""
-    candidates = SP500[:200] + NASDAQ_100[:50]
-    seen = set()
-    unique = [s for s in candidates if not (s in seen or seen.add(s))]
+    candidates = list(dict.fromkeys(SP500[:200] + NASDAQ_100[:50]))
+    data = _safe_get_data(candidates[:150], "1mo")
     
     performers = []
-    for sym in unique[:150]:
-        try:
-            with _download_lock:
-                hist = yf.download(sym, period="10d", interval="1d", progress=False, auto_adjust=True)
-            if hist is None or hist.empty or len(hist) < 4:
-                continue
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-            price_now = float(hist["Close"].iloc[-1])
-            price_4d = float(hist["Close"].iloc[-5]) if len(hist) >= 5 else float(hist["Close"].iloc[0])
-            pct = ((price_now - price_4d) / price_4d) * 100
-            vol_recent = float(hist["Volume"].iloc[-4:].mean())
-            vol_avg = float(hist["Volume"].mean())
-            vol_ratio = vol_recent / max(vol_avg, 1)
-            performers.append({"sym": sym, "price": price_now, "pct": pct, "vol_ratio": vol_ratio})
-        except:
-            pass
+    for sym, hist in data.items():
+        c = hist["Close"].values.astype(float)
+        v = hist["Volume"].values.astype(float)
+        if len(c) < 5: continue
+        price = c[-1]; price_4d = c[-5]
+        pct = ((price - price_4d) / price_4d) * 100
+        rsi = _calc_rsi(c)
+        vol_4d = np.mean(v[-4:]); vol_20d = np.mean(v[-20:])
+        vol_ratio = vol_4d / max(vol_20d, 1)
+        performers.append({"sym":sym,"price":price,"pct":pct,"rsi":rsi,"vol_ratio":vol_ratio,"vol_4d":vol_4d})
     
     performers.sort(key=lambda x: x["pct"], reverse=True)
-    top10 = performers[:10]
+    top = performers[:10]
     
     rows = ""
-    for i, p in enumerate(top10):
-        name = p["sym"]
-        for s in SYMBOLS_DB:
-            if s["s"] == p["sym"]:
-                name = s["n"]
-                break
-        rows += f'<tr><td>{i+1}</td><td><b>{p["sym"]}</b></td><td>{name}</td><td class="up">{p["pct"]:+.2f}%</td><td>${p["price"]:.2f}</td><td>{p["vol_ratio"]:.1f}x</td></tr>'
+    for i, p in enumerate(top):
+        name = _get_name(p["sym"])
+        vol_analysis = "✅ Volumen confirma" if p["vol_ratio"] > 1.3 else ("⚠️ Volumen débil" if p["vol_ratio"] < 0.8 else "Volumen normal")
+        rsi_note = "⚠️ SOBRECOMPRA" if p["rsi"] > 70 else ("Momentum fuerte" if p["rsi"] > 55 else "Neutral")
+        continuity = "ALTA" if p["vol_ratio"] > 1.3 and p["rsi"] < 70 else ("MEDIA" if p["rsi"] < 75 else "BAJA — riesgo corrección")
+        
+        rows += f"""<tr><td>{i+1}</td><td><b>{p["sym"]}</b></td><td>{name}</td>
+        <td class="up"><b>{p["pct"]:+.2f}%</b></td><td>${p["price"]:.2f}</td>
+        <td>{p["vol_ratio"]:.1f}x — {vol_analysis}</td><td>{_rsi_text(p["rsi"])}</td>
+        <td>{continuity}</td></tr>"""
     
-    return f"""<h2>🔥 2. Top 10 Activos — Mejor Desempeño Últimos 4 Días</h2>
-<p>Fuente: Yahoo Finance | {len(performers)} activos analizados</p>
-<table><thead><tr><th>#</th><th>Ticker</th><th>Nombre</th><th>Var. 4 días</th><th>Precio</th><th>Vol. Ratio</th></tr></thead>
-<tbody>{rows}</tbody></table>"""
+    return f"""<div class="rpt-section">
+<h2>🔥 2. Top 10 Activos — Mejor Desempeño Últimos 4 Días</h2>
+<p class="rpt-narrative">Identificación de los 10 activos con mayor apreciación en las últimas 4 sesiones bursátiles.
+El análisis de volumen compara el promedio de 4 días contra el promedio de 20 días para validar la fortaleza del movimiento.
+Un ratio de volumen superior a 1.3x confirma interés institucional; inferior a 0.8x sugiere movimiento frágil.</p>
+<table class="rpt-table"><thead><tr>
+<th>#</th><th>Ticker</th><th>Nombre</th><th>Var. 4 días</th><th>Precio</th><th>Volumen</th><th>RSI</th><th>Prob. Continuidad</th>
+</tr></thead><tbody>{rows}</tbody></table>
+<p class="rpt-footer">Fuente: Yahoo Finance | Periodo: 4 sesiones | Ratio volumen = Vol 4d / Vol 20d</p>
+</div>"""
 
 
 def report_earnings_next_10days():
-    """Section 3: Upcoming earnings in next 10 days."""
-    # Use yfinance calendar for major stocks
     earnings = []
-    candidates = SP500[:100]
-    for sym in candidates[:60]:
+    for sym in SP500[:80]:
         try:
             with _download_lock:
                 t = yf.Ticker(sym)
@@ -812,292 +868,368 @@ def report_earnings_next_10days():
             if cal is not None and not cal.empty:
                 if 'Earnings Date' in cal.index:
                     ed = cal.loc['Earnings Date']
-                    if hasattr(ed, 'iloc'):
-                        ed = ed.iloc[0]
-                    earnings.append({"sym": sym, "date": str(ed)})
+                    if hasattr(ed, 'iloc'): ed = ed.iloc[0]
+                    earnings.append({"sym":sym,"date":str(ed),"name":_get_name(sym)})
         except:
             pass
     
     if not earnings:
-        return "<h2>📅 3. Earnings Próximos 10 Días</h2><p>No se encontraron datos de earnings disponibles en Yahoo Finance para el periodo consultado.</p>"
+        return """<div class="rpt-section"><h2>📅 3. Earnings Próximos 10 Días</h2>
+<p class="rpt-narrative">No se encontraron datos de earnings en Yahoo Finance para el periodo consultado.
+Las fechas de publicación de resultados financieros suelen actualizarse 2-3 semanas antes del evento.</p></div>"""
     
-    rows = "".join(f'<tr><td>{e["sym"]}</td><td>{e["date"]}</td></tr>' for e in earnings[:20])
-    return f"""<h2>📅 3. Earnings Próximos 10 Días</h2>
-<p>{len(earnings)} empresas con fechas de earnings encontradas</p>
-<table><thead><tr><th>Ticker</th><th>Fecha Earnings</th></tr></thead>
-<tbody>{rows}</tbody></table>"""
+    rows = "".join(f'<tr><td><b>{e["sym"]}</b></td><td>{e["name"]}</td><td>{e["date"]}</td></tr>' for e in earnings[:25])
+    
+    return f"""<div class="rpt-section">
+<h2>📅 3. Earnings — Publicación de Resultados Próximos 10 Días</h2>
+<p class="rpt-narrative">Las siguientes empresas tienen programada la publicación de sus resultados financieros trimestrales.
+Los earnings son catalizadores clave que pueden generar movimientos de ±5-15% en una sola sesión.
+Se recomienda precaución con posiciones abiertas antes de la publicación, especialmente en acciones con alta volatilidad implícita.</p>
+<div class="rpt-highlight">⚠️ <b>Nota:</b> Los movimientos post-earnings dependen de si los resultados superan o no las expectativas del consenso de analistas,
+no solo de si son positivos o negativos en términos absolutos.</div>
+<table class="rpt-table"><thead><tr><th>Ticker</th><th>Empresa</th><th>Fecha Earnings</th></tr></thead>
+<tbody>{rows}</tbody></table>
+<p class="rpt-footer">Fuente: Yahoo Finance Calendar | {len(earnings)} empresas identificadas</p></div>"""
 
 
 def report_likely_up_this_week():
-    """Section 4: Stocks likely to go UP this week based on momentum."""
-    candidates = SP500[:150]
+    data = _safe_get_data(SP500[:120], "3mo")
     bullish = []
-    for sym in candidates[:100]:
-        try:
-            with _download_lock:
-                hist = yf.download(sym, period="3mo", interval="1d", progress=False, auto_adjust=True)
-            if hist is None or hist.empty or len(hist) < 50:
-                continue
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-            c = hist["Close"].values.astype(float)
-            ema9 = pd.Series(c).ewm(span=9).mean().iloc[-1]
-            ema21 = pd.Series(c).ewm(span=21).mean().iloc[-1]
-            ema50 = pd.Series(c).ewm(span=50).mean().iloc[-1]
-            price = c[-1]
-            # RSI
-            d = pd.Series(c).diff()
-            g = d.where(d>0,0).rolling(14).mean().iloc[-1]
-            l = (-d.where(d<0,0)).rolling(14).mean().iloc[-1]
-            rsi = 100 - 100/(1+g/(l+1e-10))
-            
-            # Bullish: price > EMA9 > EMA21, RSI 40-65 (room to grow), positive momentum
-            if price > ema9 > ema21 and 40 < rsi < 65:
-                pct_5d = ((c[-1] - c[-5]) / c[-5]) * 100 if len(c) >= 5 else 0
-                bullish.append({"sym": sym, "price": price, "rsi": rsi, "pct_5d": pct_5d})
-        except:
-            pass
+    for sym, hist in data.items():
+        c = hist["Close"].values.astype(float)
+        if len(c) < 50: continue
+        price = c[-1]
+        emas = _calc_emas(c)
+        rsi = _calc_rsi(c)
+        pct_5d = ((c[-1]-c[-5])/c[-5])*100 if len(c)>=5 else 0
+        pct_20d = ((c[-1]-c[-20])/c[-20])*100 if len(c)>=20 else 0
+        
+        if price > emas["ema9"] > emas["ema21"] and 40 < rsi < 68:
+            reason = "Precio sobre EMA9 > EMA21 con RSI en zona óptima (40-68). "
+            if pct_5d > 0: reason += f"Momentum positivo reciente ({pct_5d:+.1f}% en 5 días). "
+            if emas["ema50"] and price > emas["ema50"]: reason += "Sobre EMA50 confirma tendencia media. "
+            bullish.append({"sym":sym,"price":price,"rsi":rsi,"pct_5d":pct_5d,"pct_20d":pct_20d,"reason":reason,"emas":emas})
     
     bullish.sort(key=lambda x: x["pct_5d"], reverse=True)
     
     rows = ""
     for p in bullish[:15]:
-        name = p["sym"]
-        for s in SYMBOLS_DB:
-            if s["s"] == p["sym"]: name = s["n"]; break
-        rows += f'<tr><td><b>{p["sym"]}</b></td><td>{name}</td><td>${p["price"]:.2f}</td><td>{p["rsi"]:.0f}</td><td class="up">{p["pct_5d"]:+.2f}%</td></tr>'
+        name = _get_name(p["sym"])
+        risk = "Bajo" if p["rsi"] < 55 else ("Medio" if p["rsi"] < 65 else "Alto — cerca de sobrecompra")
+        rows += f"""<tr><td><b>{p["sym"]}</b></td><td>{name}</td><td>${p["price"]:.2f}</td>
+        <td>{_rsi_text(p["rsi"])}</td><td class="up">{p["pct_5d"]:+.2f}%</td>
+        <td style="font-size:11px">{p["reason"]}</td><td>{risk}</td></tr>"""
     
-    return f"""<h2>🟢 4. Acciones que Pueden SUBIR Esta Semana</h2>
-<p>Criterio: Precio &gt; EMA9 &gt; EMA21, RSI entre 40-65 (momentum alcista sin sobrecompra)</p>
-<table><thead><tr><th>Ticker</th><th>Nombre</th><th>Precio</th><th>RSI</th><th>Var. 5d</th></tr></thead>
-<tbody>{rows}</tbody></table>"""
+    return f"""<div class="rpt-section">
+<h2>🟢 4. Acciones que Pueden SUBIR Esta Semana</h2>
+<p class="rpt-narrative">Selección de acciones con estructura técnica alcista basada en análisis de medias móviles y momentum.
+<b>Criterios:</b> Precio &gt; EMA9 &gt; EMA21 (alineación alcista), RSI entre 40-68 (momentum positivo sin sobrecompra).
+Estas acciones muestran una confluencia de factores técnicos que sugieren continuación alcista en el corto plazo.</p>
+<table class="rpt-table"><thead><tr>
+<th>Ticker</th><th>Nombre</th><th>Precio</th><th>RSI</th><th>Var. 5d</th><th>Análisis</th><th>Riesgo</th>
+</tr></thead><tbody>{rows}</tbody></table>
+<p class="rpt-footer">Fuente: Yahoo Finance | Análisis técnico: EMA 9/21/50, RSI 14 | {len(bullish)} acciones identificadas</p></div>"""
 
 
 def report_likely_down_this_week():
-    """Section 5: Stocks likely to go DOWN."""
-    candidates = SP500[:150]
+    data = _safe_get_data(SP500[:120], "3mo")
     bearish = []
-    for sym in candidates[:100]:
-        try:
-            with _download_lock:
-                hist = yf.download(sym, period="3mo", interval="1d", progress=False, auto_adjust=True)
-            if hist is None or hist.empty or len(hist) < 50:
-                continue
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-            c = hist["Close"].values.astype(float)
-            ema9 = pd.Series(c).ewm(span=9).mean().iloc[-1]
-            ema21 = pd.Series(c).ewm(span=21).mean().iloc[-1]
-            price = c[-1]
-            d = pd.Series(c).diff()
-            g = d.where(d>0,0).rolling(14).mean().iloc[-1]
-            l = (-d.where(d<0,0)).rolling(14).mean().iloc[-1]
-            rsi = 100 - 100/(1+g/(l+1e-10))
-            
-            if price < ema9 < ema21 and rsi < 45:
-                pct_5d = ((c[-1] - c[-5]) / c[-5]) * 100 if len(c) >= 5 else 0
-                bearish.append({"sym": sym, "price": price, "rsi": rsi, "pct_5d": pct_5d})
-        except:
-            pass
+    for sym, hist in data.items():
+        c = hist["Close"].values.astype(float)
+        if len(c) < 50: continue
+        price = c[-1]
+        emas = _calc_emas(c)
+        rsi = _calc_rsi(c)
+        pct_5d = ((c[-1]-c[-5])/c[-5])*100 if len(c)>=5 else 0
+        
+        if price < emas["ema9"] < emas["ema21"] and rsi < 48:
+            reason = "Precio bajo EMA9 < EMA21 con RSI débil. "
+            if pct_5d < -1: reason += f"Caída reciente ({pct_5d:.1f}%) confirma presión vendedora. "
+            if emas["ema50"] and price < emas["ema50"]: reason += "Bajo EMA50 indica debilidad estructural. "
+            bearish.append({"sym":sym,"price":price,"rsi":rsi,"pct_5d":pct_5d,"reason":reason})
     
     bearish.sort(key=lambda x: x["pct_5d"])
     
     rows = ""
     for p in bearish[:15]:
-        name = p["sym"]
-        for s in SYMBOLS_DB:
-            if s["s"] == p["sym"]: name = s["n"]; break
-        rows += f'<tr><td><b>{p["sym"]}</b></td><td>{name}</td><td>${p["price"]:.2f}</td><td>{p["rsi"]:.0f}</td><td class="down">{p["pct_5d"]:+.2f}%</td></tr>'
+        name = _get_name(p["sym"])
+        rows += f"""<tr><td><b>{p["sym"]}</b></td><td>{name}</td><td>${p["price"]:.2f}</td>
+        <td>{_rsi_text(p["rsi"])}</td><td class="down">{p["pct_5d"]:+.2f}%</td>
+        <td style="font-size:11px">{p["reason"]}</td></tr>"""
     
-    return f"""<h2>🔴 5. Acciones que Pueden BAJAR Esta Semana</h2>
-<p>Criterio: Precio &lt; EMA9 &lt; EMA21, RSI &lt; 45 (momentum bajista)</p>
-<table><thead><tr><th>Ticker</th><th>Nombre</th><th>Precio</th><th>RSI</th><th>Var. 5d</th></tr></thead>
-<tbody>{rows}</tbody></table>"""
+    return f"""<div class="rpt-section">
+<h2>🔴 5. Acciones que Pueden BAJAR Esta Semana</h2>
+<p class="rpt-narrative">Identificación de acciones con estructura técnica bajista.
+<b>Criterios:</b> Precio &lt; EMA9 &lt; EMA21 (alineación bajista), RSI &lt; 48 (momentum negativo).
+Estas acciones muestran debilidad técnica que podría resultar en caídas adicionales en los próximos días.</p>
+<div class="rpt-highlight">⚠️ <b>Importante:</b> Las acciones con RSI &lt; 30 podrían estar en zona de sobreventa
+y experimentar rebotes técnicos de corto plazo. Considere esto para operaciones SHORT.</div>
+<table class="rpt-table"><thead><tr>
+<th>Ticker</th><th>Nombre</th><th>Precio</th><th>RSI</th><th>Var. 5d</th><th>Análisis</th>
+</tr></thead><tbody>{rows}</tbody></table>
+<p class="rpt-footer">Fuente: Yahoo Finance | {len(bearish)} acciones con estructura bajista</p></div>"""
 
 
 def report_4day_outlook():
-    """Section 6: 4-day market outlook."""
-    # Analyze major indices
-    indices = {"^GSPC": "S&P 500", "^DJI": "Dow Jones", "^IXIC": "NASDAQ", "^RUT": "Russell 2000", "^VIX": "VIX"}
-    rows = ""
-    for sym, name in indices.items():
-        try:
-            with _download_lock:
-                hist = yf.download(sym, period="1mo", interval="1d", progress=False, auto_adjust=True)
-            if hist is None or hist.empty: continue
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-            c = hist["Close"].values.astype(float)
-            price = c[-1]
-            pct_5d = ((c[-1] - c[-5]) / c[-5]) * 100 if len(c) >= 5 else 0
-            trend = "ALCISTA" if pct_5d > 0.5 else ("BAJISTA" if pct_5d < -0.5 else "LATERAL")
-            cls = "up" if pct_5d > 0 else "down"
-            rows += f'<tr><td><b>{sym}</b></td><td>{name}</td><td>${price:,.2f}</td><td class="{cls}">{pct_5d:+.2f}%</td><td>{trend}</td></tr>'
-        except:
-            pass
+    indices = {"^GSPC":"S&P 500","^DJI":"Dow Jones","^IXIC":"NASDAQ Composite","^RUT":"Russell 2000","^VIX":"VIX (Volatilidad)","^TNX":"Bono 10 Años US"}
+    data = _safe_get_data(list(indices.keys()), "1mo")
     
-    return f"""<h2>🔮 6. Perspectiva de Mercado — Próximos 4 Días</h2>
-<table><thead><tr><th>Índice</th><th>Nombre</th><th>Precio</th><th>Var. 5 días</th><th>Tendencia</th></tr></thead>
-<tbody>{rows}</tbody></table>"""
+    rows = ""
+    analysis_text = ""
+    for sym, name in indices.items():
+        if sym not in data: continue
+        c = data[sym]["Close"].values.astype(float)
+        price = c[-1]
+        pct_1d = ((c[-1]-c[-2])/c[-2])*100 if len(c)>=2 else 0
+        pct_5d = ((c[-1]-c[-5])/c[-5])*100 if len(c)>=5 else 0
+        pct_20d = ((c[-1]-c[-20])/c[-20])*100 if len(c)>=20 else 0
+        rsi = _calc_rsi(c)
+        
+        rows += f"""<tr><td><b>{sym}</b></td><td>{name}</td><td>${price:,.2f}</td>
+        <td class="{"up" if pct_1d>0 else "down"}">{pct_1d:+.2f}%</td>
+        <td class="{"up" if pct_5d>0 else "down"}">{pct_5d:+.2f}%</td>
+        <td class="{"up" if pct_20d>0 else "down"}">{pct_20d:+.2f}%</td>
+        <td>{_rsi_text(rsi)}</td><td>{_trend_text(pct_5d)}</td></tr>"""
+        
+        if sym == "^GSPC":
+            if pct_5d > 1: analysis_text += f"<p>📊 <b>S&P 500:</b> Tendencia alcista con {pct_5d:+.1f}% en la semana. "
+            elif pct_5d < -1: analysis_text += f"<p>📊 <b>S&P 500:</b> Presión bajista con {pct_5d:+.1f}% en la semana. "
+            else: analysis_text += f"<p>📊 <b>S&P 500:</b> Movimiento lateral ({pct_5d:+.1f}%). "
+            if rsi > 65: analysis_text += "RSI en zona elevada sugiere cautela. "
+            elif rsi < 35: analysis_text += "RSI en sobreventa podría generar rebote. "
+            analysis_text += "</p>"
+        elif sym == "^VIX":
+            if price > 25: analysis_text += f"<p>⚡ <b>VIX a {price:.1f}:</b> Alta volatilidad — mercado temeroso, posibles movimientos bruscos.</p>"
+            elif price < 15: analysis_text += f"<p>⚡ <b>VIX a {price:.1f}:</b> Baja volatilidad — mercado complaciente, posible calma antes de tormenta.</p>"
+    
+    return f"""<div class="rpt-section">
+<h2>🔮 6. Perspectiva de Mercado — Próximos 4 Días</h2>
+<p class="rpt-narrative">Análisis de los principales índices bursátiles de EE.UU. y su dirección probable para los próximos 4 días de operación.
+Se evalúan tendencias de corto (1 día), medio (5 días) y largo plazo (20 días) junto con indicadores de momentum.</p>
+<table class="rpt-table"><thead><tr>
+<th>Índice</th><th>Nombre</th><th>Precio</th><th>Var. 1d</th><th>Var. 5d</th><th>Var. 20d</th><th>RSI</th><th>Tendencia</th>
+</tr></thead><tbody>{rows}</tbody></table>
+<h3>📝 Análisis Narrativo</h3>
+<div class="rpt-narrative">{analysis_text}</div>
+<p class="rpt-footer">Fuente: Yahoo Finance | Análisis automático basado en datos técnicos</p></div>"""
 
 
 def report_sector_news():
-    """Section 7: Sector analysis using ETF performance."""
     sectors = {"XLK":"Tecnología","XLF":"Financieros","XLE":"Energía","XLV":"Salud",
                "XLY":"Consumo Discrecional","XLP":"Consumo Básico","XLI":"Industriales",
                "XLB":"Materiales","XLRE":"Bienes Raíces","XLU":"Utilidades","XLC":"Comunicaciones"}
-    rows = ""
-    for etf, name in sectors.items():
-        try:
-            with _download_lock:
-                hist = yf.download(etf, period="1mo", interval="1d", progress=False, auto_adjust=True)
-            if hist is None or hist.empty: continue
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-            c = hist["Close"].values.astype(float)
-            price = c[-1]
-            pct_1w = ((c[-1] - c[-5]) / c[-5]) * 100 if len(c) >= 5 else 0
-            pct_1m = ((c[-1] - c[0]) / c[0]) * 100
-            cls = "up" if pct_1w > 0 else "down"
-            rows += f'<tr><td>{etf}</td><td><b>{name}</b></td><td>${price:.2f}</td><td class="{cls}">{pct_1w:+.2f}%</td><td class="{"up" if pct_1m>0 else "down"}">{pct_1m:+.2f}%</td></tr>'
-        except:
-            pass
+    data = _safe_get_data(list(sectors.keys()), "1mo")
     
-    return f"""<h2>📰 7. Análisis por Sector S&P 500 (GICS)</h2>
-<p>Performance basado en ETFs sectoriales | Fuente: Yahoo Finance</p>
-<table><thead><tr><th>ETF</th><th>Sector</th><th>Precio</th><th>Var. 1 sem</th><th>Var. 1 mes</th></tr></thead>
-<tbody>{rows}</tbody></table>"""
+    rows = ""
+    analysis = ""
+    best_sector = ("", -999)
+    worst_sector = ("", 999)
+    
+    for etf, name in sectors.items():
+        if etf not in data: continue
+        c = data[etf]["Close"].values.astype(float)
+        v = data[etf]["Volume"].values.astype(float)
+        price = c[-1]
+        pct_1w = ((c[-1]-c[-5])/c[-5])*100 if len(c)>=5 else 0
+        pct_1m = ((c[-1]-c[0])/c[0])*100
+        rsi = _calc_rsi(c)
+        vol_ratio = np.mean(v[-5:])/max(np.mean(v),1)
+        
+        if pct_1w > best_sector[1]: best_sector = (name, pct_1w)
+        if pct_1w < worst_sector[1]: worst_sector = (name, pct_1w)
+        
+        rows += f"""<tr><td>{etf}</td><td><b>{name}</b></td><td>${price:.2f}</td>
+        <td class="{"up" if pct_1w>0 else "down"}">{pct_1w:+.2f}%</td>
+        <td class="{"up" if pct_1m>0 else "down"}">{pct_1m:+.2f}%</td>
+        <td>{_rsi_text(rsi)}</td><td>{_trend_text(pct_1w)}</td></tr>"""
+    
+    analysis = f"""<p>🏆 <b>Mejor sector de la semana:</b> {best_sector[0]} ({best_sector[1]:+.2f}%)</p>
+<p>📉 <b>Peor sector de la semana:</b> {worst_sector[0]} ({worst_sector[1]:+.2f}%)</p>"""
+    
+    return f"""<div class="rpt-section">
+<h2>📰 7. Análisis por Sector S&P 500 (GICS)</h2>
+<p class="rpt-narrative">Rendimiento de los 11 sectores del S&P 500 medido a través de ETFs sectoriales de SPDR.
+La rotación sectorial es clave para identificar hacia dónde fluye el capital institucional.
+Los sectores con mejor rendimiento semanal y volumen creciente suelen continuar su tendencia en el corto plazo.</p>
+<table class="rpt-table"><thead><tr>
+<th>ETF</th><th>Sector</th><th>Precio</th><th>Var. 1 sem</th><th>Var. 1 mes</th><th>RSI</th><th>Tendencia</th>
+</tr></thead><tbody>{rows}</tbody></table>
+<h3>📝 Resumen de Rotación Sectorial</h3>
+<div class="rpt-narrative">{analysis}</div>
+<p class="rpt-footer">Fuente: Yahoo Finance | ETFs sectoriales SPDR</p></div>"""
 
 
 def report_market_today():
-    """Section 8: Market behavior today."""
-    indices = {"^GSPC":"S&P 500","^DJI":"Dow Jones","^IXIC":"NASDAQ","^RUT":"Russell 2000","^VIX":"VIX","^TNX":"10Y Treasury"}
-    rows = ""
-    for sym, name in indices.items():
-        try:
-            with _download_lock:
-                hist = yf.download(sym, period="5d", interval="1d", progress=False, auto_adjust=True)
-            if hist is None or hist.empty: continue
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-            price = float(hist["Close"].iloc[-1])
-            prev = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else price
-            chg = ((price - prev) / prev) * 100
-            cls = "up" if chg > 0 else "down"
-            rows += f'<tr><td><b>{sym}</b></td><td>{name}</td><td>${price:,.2f}</td><td class="{cls}">{chg:+.2f}%</td></tr>'
-        except:
-            pass
+    indices = {"^GSPC":"S&P 500","^DJI":"Dow Jones","^IXIC":"NASDAQ","^RUT":"Russell 2000","^VIX":"VIX","^TNX":"10Y Treasury","GC=F":"Oro","CL=F":"Petróleo WTI","DX-Y.NYB":"Dólar Index"}
+    data = _safe_get_data(list(indices.keys()), "5d")
     
-    return f"""<h2>🏛️ 8. Comportamiento del Mercado Hoy</h2>
-<table><thead><tr><th>Índice</th><th>Nombre</th><th>Precio</th><th>Var. Diaria</th></tr></thead>
-<tbody>{rows}</tbody></table>"""
+    rows = ""
+    narrative = "<p><b>Resumen del día:</b> "
+    sp_chg = 0
+    
+    for sym, name in indices.items():
+        if sym not in data: continue
+        c = data[sym]["Close"].values.astype(float)
+        price = c[-1]; prev = c[-2] if len(c)>=2 else price
+        chg = ((price-prev)/prev)*100
+        if sym == "^GSPC": sp_chg = chg
+        rows += f"""<tr><td><b>{sym}</b></td><td>{name}</td><td>${price:,.2f}</td>
+        <td class="{"up" if chg>0 else "down"}"><b>{chg:+.2f}%</b></td></tr>"""
+    
+    if sp_chg > 0.5: narrative += "Sesión positiva con el S&P 500 avanzando. Sentimiento optimista predomina. "
+    elif sp_chg < -0.5: narrative += "Sesión negativa con presión vendedora en el S&P 500. "
+    else: narrative += "Sesión mixta con movimientos laterales en los principales índices. "
+    narrative += "</p>"
+    
+    return f"""<div class="rpt-section">
+<h2>🏛️ 8. Comportamiento del Mercado Hoy</h2>
+<p class="rpt-narrative">Panorama actual de los principales índices, commodities y divisas del mercado estadounidense.</p>
+<table class="rpt-table"><thead><tr><th>Índice</th><th>Nombre</th><th>Precio</th><th>Var. Diaria</th></tr></thead>
+<tbody>{rows}</tbody></table>
+<h3>📝 Análisis de la Sesión</h3>
+<div class="rpt-narrative">{narrative}</div>
+<p class="rpt-footer">Fuente: Yahoo Finance | Precios con delay de ~15 minutos</p></div>"""
 
 
 def report_ai_tech_news():
-    """Section 9: AI/Tech sector performance."""
     tech = {"NVDA":"NVIDIA","AMD":"AMD","MSFT":"Microsoft","GOOGL":"Alphabet","META":"Meta",
             "AMZN":"Amazon","AAPL":"Apple","TSM":"TSMC","AVGO":"Broadcom","PLTR":"Palantir",
-            "ARM":"ARM Holdings","SMCI":"Super Micro","CRWD":"CrowdStrike","SNOW":"Snowflake"}
+            "ARM":"ARM Holdings","SMCI":"Super Micro","CRWD":"CrowdStrike","SNOW":"Snowflake","IONQ":"IonQ","SOUN":"SoundHound AI"}
+    data = _safe_get_data(list(tech.keys()), "1mo")
+    
     rows = ""
     for sym, name in tech.items():
-        try:
-            with _download_lock:
-                hist = yf.download(sym, period="1mo", interval="1d", progress=False, auto_adjust=True)
-            if hist is None or hist.empty: continue
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-            c = hist["Close"].values.astype(float)
-            price = c[-1]
-            pct_1w = ((c[-1] - c[-5]) / c[-5]) * 100 if len(c) >= 5 else 0
-            pct_1m = ((c[-1] - c[0]) / c[0]) * 100
-            cls = "up" if pct_1w > 0 else "down"
-            rows += f'<tr><td><b>{sym}</b></td><td>{name}</td><td>${price:.2f}</td><td class="{cls}">{pct_1w:+.2f}%</td><td class="{"up" if pct_1m>0 else "down"}">{pct_1m:+.2f}%</td></tr>'
-        except:
-            pass
+        if sym not in data: continue
+        c = data[sym]["Close"].values.astype(float)
+        price = c[-1]
+        pct_1w = ((c[-1]-c[-5])/c[-5])*100 if len(c)>=5 else 0
+        pct_1m = ((c[-1]-c[0])/c[0])*100
+        rsi = _calc_rsi(c)
+        emas = _calc_emas(c)
+        
+        tech_note = ""
+        if emas["ema50"] and price > emas["ema50"]: tech_note = "Sobre EMA50 ✅"
+        elif emas["ema50"]: tech_note = "Bajo EMA50 ⚠️"
+        if rsi > 70: tech_note += " | Sobrecompra"
+        elif rsi < 30: tech_note += " | Sobreventa"
+        
+        rows += f"""<tr><td><b>{sym}</b></td><td>{name}</td><td>${price:.2f}</td>
+        <td class="{"up" if pct_1w>0 else "down"}">{pct_1w:+.2f}%</td>
+        <td class="{"up" if pct_1m>0 else "down"}">{pct_1m:+.2f}%</td>
+        <td>{_rsi_text(rsi)}</td><td style="font-size:11px">{tech_note}</td></tr>"""
     
-    return f"""<h2>🤖 9. AI / Tecnología / Semiconductores</h2>
-<p>Performance de empresas clave del sector tecnológico</p>
-<table><thead><tr><th>Ticker</th><th>Empresa</th><th>Precio</th><th>Var. 1 sem</th><th>Var. 1 mes</th></tr></thead>
-<tbody>{rows}</tbody></table>"""
+    return f"""<div class="rpt-section">
+<h2>🤖 9. Sector AI / Tecnología / Semiconductores</h2>
+<p class="rpt-narrative">Seguimiento de las empresas clave en inteligencia artificial, cloud computing, semiconductores y tecnología disruptiva.
+Este sector lidera la innovación global y representa el mayor peso en los índices S&P 500 y NASDAQ.
+Las tendencias en AI (modelos de lenguaje, chips para inferencia, cloud AI) siguen siendo el motor principal del mercado.</p>
+<table class="rpt-table"><thead><tr>
+<th>Ticker</th><th>Empresa</th><th>Precio</th><th>Var. 1 sem</th><th>Var. 1 mes</th><th>RSI</th><th>Técnico</th>
+</tr></thead><tbody>{rows}</tbody></table>
+<p class="rpt-footer">Fuente: Yahoo Finance | Sector AI/Tech/Semiconductores</p></div>"""
 
 
 def report_ema200_stocks():
-    """Section 10: Stocks near EMA 200."""
-    candidates = SP500[:100]
-    near_ema = []
-    for sym in candidates[:80]:
-        try:
-            with _download_lock:
-                hist = yf.download(sym, period="1y", interval="1d", progress=False, auto_adjust=True)
-            if hist is None or hist.empty or len(hist) < 200: continue
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-            c = hist["Close"].values.astype(float)
-            ema200 = pd.Series(c).ewm(span=200).mean().iloc[-1]
-            price = c[-1]
-            dist = ((price - ema200) / ema200) * 100
-            if abs(dist) < 5:  # Within 5% of EMA 200
-                trend = "↗️ SUBIENDO" if price > ema200 else "↘️ BAJANDO"
-                near_ema.append({"sym": sym, "price": price, "ema200": ema200, "dist": dist, "trend": trend})
-        except:
-            pass
+    data = _safe_get_data(SP500[:100], "1y")
+    near = {"above":[],"below":[]}
     
-    near_ema.sort(key=lambda x: abs(x["dist"]))
+    for sym, hist in data.items():
+        c = hist["Close"].values.astype(float)
+        if len(c) < 200: continue
+        ema200 = pd.Series(c).ewm(span=200).mean().iloc[-1]
+        price = c[-1]; dist = ((price-ema200)/ema200)*100
+        rsi = _calc_rsi(c)
+        pct_5d = ((c[-1]-c[-5])/c[-5])*100 if len(c)>=5 else 0
+        
+        if abs(dist) < 5:
+            entry = {"sym":sym,"price":price,"ema200":ema200,"dist":dist,"rsi":rsi,"pct_5d":pct_5d}
+            if dist > 0: near["above"].append(entry)
+            else: near["below"].append(entry)
     
-    rows = ""
-    for p in near_ema[:20]:
-        name = p["sym"]
-        for s in SYMBOLS_DB:
-            if s["s"] == p["sym"]: name = s["n"]; break
-        cls = "up" if p["dist"] > 0 else "down"
-        rows += f'<tr><td><b>{p["sym"]}</b></td><td>{name}</td><td>${p["price"]:.2f}</td><td>${p["ema200"]:.2f}</td><td class="{cls}">{p["dist"]:+.2f}%</td><td>{p["trend"]}</td></tr>'
+    near["above"].sort(key=lambda x: x["dist"])
+    near["below"].sort(key=lambda x: x["dist"], reverse=True)
     
-    return f"""<h2>📏 10. Acciones Cerca del EMA 200</h2>
-<p>Acciones dentro del ±5% de su EMA 200 en temporalidad diaria</p>
-<table><thead><tr><th>Ticker</th><th>Nombre</th><th>Precio</th><th>EMA 200</th><th>Distancia</th><th>Tendencia</th></tr></thead>
-<tbody>{rows}</tbody></table>"""
+    def make_rows(items):
+        r = ""
+        for p in items[:10]:
+            name = _get_name(p["sym"])
+            cls = "up" if p["dist"]>0 else "down"
+            trend = "↗️ Tendencia alcista" if p["pct_5d"]>0.5 else ("↘️ Tendencia bajista" if p["pct_5d"]<-0.5 else "→ Lateral")
+            r += f"""<tr><td><b>{p["sym"]}</b></td><td>{name}</td><td>${p["price"]:.2f}</td>
+            <td>${p["ema200"]:.2f}</td><td class="{cls}">{p["dist"]:+.2f}%</td>
+            <td>{_rsi_text(p["rsi"])}</td><td>{trend}</td></tr>"""
+        return r
+    
+    return f"""<div class="rpt-section">
+<h2>📏 10. Acciones Cerca del EMA 200</h2>
+<p class="rpt-narrative">El EMA 200 es considerado la línea divisoria entre tendencia alcista y bajista de largo plazo.
+Las acciones que cruzan este nivel generan señales importantes:
+<b>Cruce alcista</b> (precio sube sobre EMA200) = potencial inicio de tendencia alcista.
+<b>Cruce bajista</b> (precio cae bajo EMA200) = potencial inicio de tendencia bajista.
+Se listan acciones dentro del ±5% de su EMA 200 diaria.</p>
+
+<h3 style="color:#26a69a">📈 Sobre EMA 200 — Tendencia Alcista</h3>
+<table class="rpt-table"><thead><tr><th>Ticker</th><th>Nombre</th><th>Precio</th><th>EMA 200</th><th>Distancia</th><th>RSI</th><th>Tendencia</th></tr></thead>
+<tbody>{make_rows(near["above"])}</tbody></table>
+
+<h3 style="color:#ef5350">📉 Bajo EMA 200 — Tendencia Bajista</h3>
+<table class="rpt-table"><thead><tr><th>Ticker</th><th>Nombre</th><th>Precio</th><th>EMA 200</th><th>Distancia</th><th>RSI</th><th>Tendencia</th></tr></thead>
+<tbody>{make_rows(near["below"])}</tbody></table>
+<p class="rpt-footer">Fuente: Yahoo Finance | EMA 200 en temporalidad diaria | {len(near["above"])+len(near["below"])} acciones encontradas</p></div>"""
 
 
 def report_fibonacci_fallen():
-    """Section 11: Stocks that have fallen >70% from high using Fibonacci."""
-    candidates = SP500[:100] + NASDAQ_100[:50]
-    seen = set()
-    unique = [s for s in candidates if not (s in seen or seen.add(s))]
+    candidates = list(dict.fromkeys(SP500[:120] + NASDAQ_100[:50]))
+    data = _safe_get_data(candidates[:120], "6mo")
     
     fallen = []
-    for sym in unique[:100]:
-        try:
-            with _download_lock:
-                hist = yf.download(sym, period="6mo", interval="1d", progress=False, auto_adjust=True)
-            if hist is None or hist.empty or len(hist) < 50: continue
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-            c = hist["Close"].values.astype(float)
-            high = float(np.max(c))
-            price = c[-1]
-            drop = ((price - high) / high) * 100
-            fib_level = abs(drop) / 100  # 0-1 scale, >0.7 means >70% drop
-            if drop < -30:  # Dropped more than 30%
-                fallen.append({"sym": sym, "price": price, "high": high, "drop": drop, "fib": fib_level})
-        except:
-            pass
+    for sym, hist in data.items():
+        c = hist["Close"].values.astype(float)
+        if len(c) < 50: continue
+        high = float(np.max(c)); low = float(np.min(c))
+        price = c[-1]; drop = ((price-high)/high)*100
+        fib_618 = high - (high-low)*0.618
+        fib_786 = high - (high-low)*0.786
+        rsi = _calc_rsi(c)
+        
+        if drop < -25:
+            near_fib = ""
+            if abs(price-fib_618)/fib_618 < 0.03: near_fib = "Cerca de Fib 0.618"
+            elif abs(price-fib_786)/fib_786 < 0.03: near_fib = "Cerca de Fib 0.786"
+            elif price < fib_786: near_fib = f"Bajo Fib 0.786 ({drop:.0f}% caída)"
+            
+            risk = "Bajo" if rsi < 30 else ("Medio" if rsi < 45 else "Alto")
+            fallen.append({"sym":sym,"price":price,"high":high,"drop":drop,
+                          "fib_618":fib_618,"fib_786":fib_786,"rsi":rsi,"near_fib":near_fib,"risk":risk})
     
     fallen.sort(key=lambda x: x["drop"])
     
+    if not fallen:
+        return """<div class="rpt-section"><h2>📉 11. Acciones Desplomadas — Análisis Fibonacci</h2>
+<p class="rpt-narrative">No se encontraron acciones del S&P 500/NASDAQ 100 con caídas superiores al 25% desde sus máximos de 6 meses.
+Esto puede indicar un mercado general sano sin grandes desplomes individuales.</p></div>"""
+    
     rows = ""
     for p in fallen[:15]:
-        name = p["sym"]
-        for s in SYMBOLS_DB:
-            if s["s"] == p["sym"]: name = s["n"]; break
-        rows += f'<tr><td><b>{p["sym"]}</b></td><td>{name}</td><td>${p["price"]:.2f}</td><td>${p["high"]:.2f}</td><td class="down">{p["drop"]:.1f}%</td><td>{p["fib"]:.1%}</td></tr>'
+        name = _get_name(p["sym"])
+        rows += f"""<tr><td><b>{p["sym"]}</b></td><td>{name}</td><td>${p["price"]:.2f}</td>
+        <td>${p["high"]:.2f}</td><td class="down"><b>{p["drop"]:.1f}%</b></td>
+        <td>${p["fib_618"]:.2f}</td><td>${p["fib_786"]:.2f}</td>
+        <td>{_rsi_text(p["rsi"])}</td><td>{p["near_fib"]}</td><td>{p["risk"]}</td></tr>"""
     
-    if not rows:
-        return "<h2>📉 11. Acciones Desplomadas (Fibonacci)</h2><p>No se encontraron acciones del S&P500 con caídas mayores al 30% en los últimos 6 meses.</p>"
-    
-    return f"""<h2>📉 11. Acciones Desplomadas — Análisis Fibonacci</h2>
-<p>Acciones con caídas significativas desde máximos de 6 meses</p>
-<table><thead><tr><th>Ticker</th><th>Nombre</th><th>Precio</th><th>Máximo 6m</th><th>Caída</th><th>Nivel Fib</th></tr></thead>
-<tbody>{rows}</tbody></table>"""
+    return f"""<div class="rpt-section">
+<h2>📉 11. Acciones Desplomadas — Análisis Fibonacci</h2>
+<p class="rpt-narrative">Identificación de acciones que han sufrido caídas significativas (>25%) desde sus máximos de 6 meses.
+Se evalúan niveles de retroceso Fibonacci (0.618 y 0.786) como posibles zonas de soporte y rebote.
+Las acciones en sobreventa (RSI &lt; 30) cerca de niveles Fibonacci clave representan oportunidades potenciales de rebote técnico,
+aunque deben evaluarse fundamentales antes de operar.</p>
+<div class="rpt-highlight">📐 <b>Niveles Fibonacci clave:</b> 0.618 (retroceso dorado) — zona de probable soporte fuerte.
+0.786 — si se rompe, indica debilidad extrema y posible caída adicional.</div>
+<table class="rpt-table"><thead><tr>
+<th>Ticker</th><th>Nombre</th><th>Precio</th><th>Máximo 6m</th><th>Caída</th><th>Fib 0.618</th><th>Fib 0.786</th><th>RSI</th><th>Nivel Fibonacci</th><th>Riesgo</th>
+</tr></thead><tbody>{rows}</tbody></table>
+<p class="rpt-footer">Fuente: Yahoo Finance | Retrocesos Fibonacci sobre máximos/mínimos de 6 meses | {len(fallen)} acciones identificadas</p></div>"""
+
 
 
 @app.get("/api/chart")
