@@ -502,44 +502,60 @@ def scan_vc_one(sym_info, interval):
         if len(df) < 10:
             return None
         
-        # Get signal MARKERS for ALL completed candles (same as chart display)
-        # Use NAU_Long and NAU_Short flags — these are the actual arrows shown on chart
-        completed = df.iloc[:-1]
+        # Apply the SAME signal gap filter as the chart display
+        # The chart shows arrows only with minimum time gap between them
+        gap_map = {"1m":120,"5m":600,"15m":1800,"30m":3600,"1h":7200,
+                   "2h":14400,"4h":28800,"1d":172800,"1wk":604800,"1mo":2592000}
+        min_gap = gap_map.get(interval, 7200)
         
+        completed = df.iloc[:-1]  # Exclude current forming candle
+        
+        # Build signal list WITH gap filter (exactly like chart markers)
         all_signals = []  # list of "LONG", "SHORT", or "NONE"
-        for _, row in completed.iterrows():
+        last_signal_time = 0
+        
+        for idx_ts, row in completed.iterrows():
+            try: ts = int(idx_ts.timestamp())
+            except: ts = 0
+            
             has_long = bool(row.get("NAU_Long", False))
             has_short = bool(row.get("NAU_Short", False))
-            if has_long:
-                all_signals.append("LONG")
-            elif has_short:
-                all_signals.append("SHORT")
+            
+            if (has_long or has_short) and (ts - last_signal_time >= min_gap):
+                if has_long:
+                    all_signals.append("LONG")
+                else:
+                    all_signals.append("SHORT")
+                last_signal_time = ts
             else:
                 all_signals.append("NONE")
         
         if len(all_signals) < 3:
             return None
         
-        # Step 1: The 2 most recent completed candles must both have signals in same direction
-        last = all_signals[-1]
-        second_last = all_signals[-2]
+        # Step 1: The 2 most recent signals (not bars!) must be consecutive and same direction
+        # Find the last 2 actual signals from the end
+        signal_positions = [(i, s) for i, s in enumerate(all_signals) if s != "NONE"]
         
-        if last == "NONE" or second_last == "NONE":
+        if len(signal_positions) < 2:
             return None
         
-        if last != second_last:
-            return None  # Must be same direction (both LONG or both SHORT)
+        last_sig_pos, last_sig = signal_positions[-1]
+        prev_sig_pos, prev_sig = signal_positions[-2]
         
-        is_buy = last == "LONG"
+        # Both must be same direction
+        if last_sig != prev_sig:
+            return None
         
-        # Step 2: Check the RECENT window (last 15 completed candles)
-        # The pair (last 2) must be the ONLY signals in this window
-        # All other candles must have NO signal markers
-        recent_window = all_signals[-15:] if len(all_signals) >= 15 else all_signals
-        before_pair = recent_window[:-2]
-        for s in before_pair:
-            if s != "NONE":
-                return None  # Any prior signal marker in window → discard
+        is_buy = last_sig == "LONG"
+        
+        # Step 2: These must be the ONLY 2 signals — no prior signals of ANY type
+        if len(signal_positions) > 2:
+            return None  # More than 2 signals exist = not a new trend
+        
+        # Step 3: The signals must be RECENT (within the last 8 bars)
+        if last_sig_pos < len(all_signals) - 8:
+            return None  # Signal too old, not recent
         
         # Get the label for display
         sig_val = float(df.iloc[-2]["NAU_Signal"])
@@ -647,7 +663,7 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
 
 @app.get("/api/report")
 def generate_report(section: str = Query("all")):
-    """Generate market report using yfinance data. Sections 1-11 or 'all'."""
+    """Generate market report. Uses Gemini AI for analysis when available."""
     try:
         t0 = time.time()
         html_parts = []
@@ -679,15 +695,74 @@ def generate_report(section: str = Query("all")):
                 elif sec == 11:
                     html_parts.append(report_fibonacci_fallen())
             except Exception as e:
-                html_parts.append(f"<h2>Sección {sec} — Error</h2><p>{str(e)}</p>")
+                html_parts.append(f'<div class="rpt-section"><h2>Sección {sec} — Error</h2><p>{str(e)}</p></div>')
+        
+        # Try to enhance with Gemini AI analysis
+        gemini_analysis = ""
+        try:
+            gemini_analysis = _gemini_enhance(sections_to_run, html_parts)
+        except:
+            pass
+        
+        final_html = "\n".join(html_parts)
+        if gemini_analysis:
+            final_html += gemini_analysis
         
         return {
-            "html": "\n".join(html_parts),
+            "html": final_html,
             "generation_time": round(time.time() - t0, 1),
             "sections": sections_to_run,
+            "ai_enhanced": bool(gemini_analysis),
         }
     except Exception as e:
         return {"error": str(e), "html": ""}
+
+
+def _gemini_enhance(sections, html_parts):
+    """Use Gemini AI to add deep analysis to the report."""
+    import urllib.request, json
+    GEMINI_KEY = "AIzaSyDzjpolj7IDRBaLOuFXZBv4aRaxlBeNHF0"
+    
+    # Extract key data points from HTML for Gemini to analyze
+    summary = "Basándote en los siguientes datos del mercado de hoy, proporciona un análisis profesional en español:\n\n"
+    for i, html in enumerate(html_parts):
+        # Extract text from HTML (strip tags roughly)
+        import re
+        text = re.sub(r'<[^>]+>', ' ', html)
+        text = re.sub(r'\s+', ' ', text).strip()
+        summary += f"SECCIÓN {sections[i]}: {text[:800]}\n\n"
+    
+    summary += """
+Instrucciones:
+1. Genera un ANÁLISIS EJECUTIVO PROFESIONAL del mercado (en español)
+2. Incluye: tendencia general, sectores fuertes/débiles, riesgos principales, oportunidades
+3. Menciona niveles técnicos clave del S&P 500
+4. Da una perspectiva para los próximos 2-4 días
+5. Formato HTML con <h2>, <h3>, <p>, <b>, <ul><li>
+6. Máximo 500 palabras
+"""
+    
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
+        payload = json.dumps({
+            "contents": [{"parts": [{"text": summary}]}],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000}
+        }).encode()
+        
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+        
+        ai_text = data["candidates"][0]["content"]["parts"][0]["text"]
+        
+        return f"""<div class="rpt-section" style="border-left-color:#ff6b35">
+<h2>🧠 Análisis AI — Gemini</h2>
+<div class="rpt-narrative">{ai_text}</div>
+<p class="rpt-footer">Análisis generado por Google Gemini AI basado en datos de Yahoo Finance</p></div>"""
+    except Exception as e:
+        return f"""<div class="rpt-section" style="border-left-color:#ff6b35">
+<h2>🧠 Análisis AI</h2>
+<p class="rpt-narrative" style="color:#ff9800">Gemini AI no disponible: {str(e)[:100]}</p></div>"""
 
 
 # ═══ REPORT HELPER FUNCTIONS (Professional) ═══
