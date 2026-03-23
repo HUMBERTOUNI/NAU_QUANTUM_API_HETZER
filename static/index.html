@@ -201,6 +201,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
     <button class="tool-btn" id="fibClearBtn" title="Borrar Fibonacci" style="color:var(--text3)">✕Fib</button>
     <button class="tool-btn" id="scanBtn" title="Scanner">📡 <span>Scanner</span></button>
     <button class="tool-btn" id="vcSignalBtn" title="Señales consecutivas V/C" style="color:var(--gold)">⚡ <span>Señal V/C</span></button>
+    <button class="tool-btn" id="reportBtn" title="Reporte de Mercado" style="color:#ff6b35">📊 <span>Report</span></button>
     <button class="tool-btn" id="wlBtn" title="Watchlist">⭐ <span>Watchlist</span></button>
     <button class="tool-btn" id="settingsBtn" title="Configuración">⚙️</button>
   </div>
@@ -349,6 +350,46 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
 </div>
 
 <!-- ═══ SETTINGS MODAL (original) ═══ -->
+
+<!-- ═══ REPORT MODAL ═══ -->
+<div id="reportModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;background:rgba(0,0,0,.6);justify-content:center;align-items:center">
+  <div style="background:var(--bg2);border:1px solid var(--bg4);border-radius:12px;width:95vw;max-width:1200px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.6)">
+    <div style="padding:16px 20px;border-bottom:1px solid var(--bg4);display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
+      <h2 style="color:#ff6b35">📊 Reporte de Mercado — Sentinel Quantum Edge</h2>
+      <div style="display:flex;align-items:center;gap:8px">
+        <select id="reportSections" style="padding:4px 8px;border-radius:4px;background:var(--bg3);border:1px solid var(--bg4);color:var(--text);font-size:12px">
+          <option value="all">Reporte Completo (11 secciones)</option>
+          <option value="1">1. Top 20 acciones 4 semanas</option>
+          <option value="2">2. Top 10 activos 4 días</option>
+          <option value="3">3. Earnings próximos 10 días</option>
+          <option value="4">4. Acciones que SUBEN esta semana</option>
+          <option value="5">5. Acciones que BAJAN esta semana</option>
+          <option value="6">6. Análisis 4 días próximos</option>
+          <option value="7">7. Noticias por sector S&P500</option>
+          <option value="8">8. Comportamiento mercado hoy</option>
+          <option value="9">9. Noticias AI/Tech/Semiconductores</option>
+          <option value="10">10. Acciones cerca EMA 200</option>
+          <option value="11">11. Acciones desplomadas + Fibonacci</option>
+        </select>
+        <button id="runReportBtn" style="background:#ff6b35;color:#fff;padding:6px 16px;border-radius:4px;font-weight:600">📊 Generar</button>
+        <button id="downloadReportBtn" style="background:var(--green);color:#fff;padding:4px 12px;border-radius:4px;font-size:12px;display:none">📥 Descargar HTML</button>
+        <button id="closeReportBtn" style="font-size:20px;padding:0 8px">✕</button>
+      </div>
+    </div>
+    <div id="reportBody" style="flex:1;overflow:auto;padding:20px;-webkit-overflow-scrolling:touch;min-height:0;font-size:13px;line-height:1.6">
+      <div id="reportLoading" style="display:none;padding:40px;text-align:center">
+        <div style="font-size:16px;margin-bottom:12px">📊 Generando reporte...</div>
+        <div style="color:var(--text3)">Analizando datos de Yahoo Finance en tiempo real.</div>
+        <div style="color:var(--text3);margin-top:4px">Esto puede tomar 2-5 minutos.</div>
+        <div id="reportProgress" style="color:var(--cyan);margin-top:12px"></div>
+      </div>
+      <div id="reportContent" style="color:var(--text)"></div>
+    </div>
+    <div style="padding:12px 20px;border-top:1px solid var(--bg4);font-size:12px;color:var(--text2)" id="reportInfo">Selecciona una sección y click Generar</div>
+  </div>
+</div>
+
+<!-- ═══ SETTINGS MODAL (cont) ═══ -->
 <div id="settingsModal">
   <div id="settingsContent">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -1161,24 +1202,65 @@ document.getElementById('setLineOpacity').oninput = (e) => { document.getElement
 document.getElementById('setLabelOpacity').oninput = (e) => { document.getElementById('labelOpVal').textContent = e.target.value + '%'; };
 document.getElementById('setExtOpacity').oninput = (e) => { document.getElementById('extOpVal').textContent = e.target.value + '%'; };
 
-// ═══ EXCEL DOWNLOAD (Feature 1) ═══
-function downloadExcel(tableId, filename) {
+// ═══ EXCEL DOWNLOAD — Real XLSX using SheetJS ═══
+let XLSX_LOADED = false;
+function loadSheetJS(callback) {
+  if (XLSX_LOADED) { callback(); return; }
+  const s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  s.onload = () => { XLSX_LOADED = true; callback(); };
+  s.onerror = () => { alert('Error cargando librería Excel. Exportando como CSV.'); downloadCSV(arguments[0], arguments[1]); };
+  document.head.appendChild(s);
+}
+
+function downloadCSV(tableId, filename) {
   const table = document.getElementById(tableId);
   if (!table) return;
   let csv = '';
-  const rows = table.querySelectorAll('tr');
-  rows.forEach(row => {
+  table.querySelectorAll('tr').forEach(row => {
     const cells = row.querySelectorAll('th, td');
     const rowData = [];
     cells.forEach(cell => rowData.push('"' + cell.textContent.trim().replace(/"/g, '""') + '"'));
     csv += rowData.join(',') + '\n';
   });
-  const BOM = '\uFEFF';
-  const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' });
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
-  link.download = filename + '_' + new Date().toISOString().slice(0,10) + '.csv';
+  link.download = filename + '.csv';
   link.click();
+}
+
+function downloadExcel(tableId, filename) {
+  loadSheetJS(() => {
+    try {
+      const table = document.getElementById(tableId);
+      if (!table) return;
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.table_to_sheet(table);
+      
+      // Auto-width columns
+      const cols = [];
+      const rows = table.querySelectorAll('tr');
+      if (rows.length > 0) {
+        const headerCells = rows[0].querySelectorAll('th, td');
+        headerCells.forEach((cell, i) => {
+          let maxLen = cell.textContent.length;
+          rows.forEach(r => {
+            const c = r.querySelectorAll('th, td')[i];
+            if (c) maxLen = Math.max(maxLen, c.textContent.length);
+          });
+          cols.push({ wch: Math.min(maxLen + 2, 40) });
+        });
+        ws['!cols'] = cols;
+      }
+      
+      XLSX.utils.book_append_sheet(wb, ws, 'Datos');
+      XLSX.writeFile(wb, filename + '_' + new Date().toISOString().slice(0,10) + '.xlsx');
+    } catch(e) {
+      console.error('XLSX error:', e);
+      downloadCSV(tableId, filename);
+    }
+  });
 }
 
 document.getElementById('downloadScanBtn').onclick = () => downloadExcel('scannerTable', 'Scanner_SQE');
@@ -1242,6 +1324,59 @@ document.getElementById('runVCBtn').onclick = async () => {
 };
 
 document.getElementById('downloadVCBtn').onclick = () => downloadExcel('vcTable', 'Senales_VC_SQE');
+
+// ═══ REPORT ═══
+document.getElementById('reportBtn').onclick = () => { document.getElementById('reportModal').style.display = 'flex'; };
+document.getElementById('closeReportBtn').onclick = () => { document.getElementById('reportModal').style.display = 'none'; };
+document.getElementById('reportModal').onclick = (e) => { if (e.target.id === 'reportModal') e.target.style.display = 'none'; };
+
+document.getElementById('runReportBtn').onclick = async () => {
+  const section = document.getElementById('reportSections').value;
+  const loading = document.getElementById('reportLoading');
+  const content = document.getElementById('reportContent');
+  const info = document.getElementById('reportInfo');
+  loading.style.display = 'block';
+  content.innerHTML = '';
+  info.textContent = 'Generando reporte...';
+  
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 600000);
+    const resp = await fetch(`${API_BASE}/api/report?section=${section}`, { signal: controller.signal });
+    clearTimeout(timeout);
+    const data = await resp.json();
+    loading.style.display = 'none';
+    
+    if (data.html) {
+      content.innerHTML = data.html;
+      document.getElementById('downloadReportBtn').style.display = 'inline-block';
+      info.textContent = `Reporte generado | ${data.generation_time || 0}s | ${new Date().toLocaleString('es-PE')}`;
+    } else if (data.error) {
+      content.innerHTML = `<p style="color:var(--red)">Error: ${data.error}</p>`;
+      info.textContent = 'Error generando reporte';
+    }
+  } catch(e) {
+    loading.style.display = 'none';
+    content.innerHTML = `<p style="color:var(--red)">Error: ${e.message}</p>`;
+  }
+};
+
+document.getElementById('downloadReportBtn').onclick = () => {
+  const content = document.getElementById('reportContent').innerHTML;
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Reporte SQE ${new Date().toLocaleDateString()}</title>
+<style>body{font-family:Arial,sans-serif;padding:20px;max-width:1200px;margin:0 auto;color:#333}
+table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid #ddd;padding:8px;text-align:left;font-size:12px}
+th{background:#2c3e50;color:#fff}tr:nth-child(even){background:#f9f9f9}h1,h2,h3{color:#2c3e50}
+.up{color:#27ae60}.down{color:#e74c3c}</style></head><body>
+<h1>📊 Reporte de Mercado — Sentinel Quantum Edge</h1>
+<p>Generado: ${new Date().toLocaleString('es-PE', {timeZone:'America/Lima'})}</p>
+${content}</body></html>`;
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `Reporte_SQE_${new Date().toISOString().slice(0,10)}.html`;
+  link.click();
+};
 
 // ═══ CANDLE TYPE CHANGE ═══
 document.getElementById('candleSelect').onchange = () => { currentLoadingSymbol = null; if (chartData) renderChart(); };
