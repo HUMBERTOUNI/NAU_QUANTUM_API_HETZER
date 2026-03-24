@@ -503,7 +503,6 @@ def scan_vc_one(sym_info, interval):
             return None
         
         # Apply the SAME signal gap filter as the chart display
-        # The chart shows arrows only with minimum time gap between them
         gap_map = {"1m":120,"5m":600,"15m":1800,"30m":3600,"1h":7200,
                    "2h":14400,"4h":28800,"1d":172800,"1wk":604800,"1mo":2592000}
         min_gap = gap_map.get(interval, 7200)
@@ -511,7 +510,7 @@ def scan_vc_one(sym_info, interval):
         completed = df.iloc[:-1]  # Exclude current forming candle
         
         # Build signal list WITH gap filter (exactly like chart markers)
-        all_signals = []  # list of "LONG", "SHORT", or "NONE"
+        all_signals = []
         last_signal_time = 0
         
         for idx_ts, row in completed.iterrows():
@@ -522,40 +521,41 @@ def scan_vc_one(sym_info, interval):
             has_short = bool(row.get("NAU_Short", False))
             
             if (has_long or has_short) and (ts - last_signal_time >= min_gap):
-                if has_long:
-                    all_signals.append("LONG")
-                else:
-                    all_signals.append("SHORT")
+                all_signals.append("LONG" if has_long else "SHORT")
                 last_signal_time = ts
             else:
                 all_signals.append("NONE")
         
-        if len(all_signals) < 3:
+        if len(all_signals) < 6:
             return None
         
-        # Step 1: The 2 most recent signals (not bars!) must be consecutive and same direction
-        # Find the last 2 actual signals from the end
-        signal_positions = [(i, s) for i, s in enumerate(all_signals) if s != "NONE"]
+        # === NEW LOGIC: Check LAST 4 CANDLES for exactly 2 consecutive signals ===
+        last_4 = all_signals[-4:]
         
-        if len(signal_positions) < 2:
+        # Find signals in the last 4 candles
+        sigs_in_4 = [(i, s) for i, s in enumerate(last_4) if s != "NONE"]
+        
+        # Must have exactly 2 signals in the last 4 candles
+        if len(sigs_in_4) != 2:
             return None
         
-        last_sig_pos, last_sig = signal_positions[-1]
-        prev_sig_pos, prev_sig = signal_positions[-2]
-        
-        # Both must be same direction
-        if last_sig != prev_sig:
+        # The 2 signals must be the same direction
+        if sigs_in_4[0][1] != sigs_in_4[1][1]:
             return None
         
-        is_buy = last_sig == "LONG"
+        # The 2 signals must be consecutive (adjacent or with max 1 NONE between them)
+        pos1, pos2 = sigs_in_4[0][0], sigs_in_4[1][0]
+        if pos2 - pos1 > 2:
+            return None  # Too far apart within the 4 candles
         
-        # Step 2: These must be the ONLY 2 signals — no prior signals of ANY type
-        if len(signal_positions) > 2:
-            return None  # More than 2 signals exist = not a new trend
+        is_buy = sigs_in_4[0][1] == "LONG"
         
-        # Step 3: The signals must be RECENT (within the last 8 bars)
-        if last_sig_pos < len(all_signals) - 8:
-            return None  # Signal too old, not recent
+        # === Check that NO signals exist in the 20 candles BEFORE the last 4 ===
+        prior = all_signals[:-4]
+        prior_check = prior[-20:] if len(prior) >= 20 else prior
+        for s in prior_check:
+            if s != "NONE":
+                return None  # Prior signal exists → not a new trend
         
         # Get the label for display
         sig_val = float(df.iloc[-2]["NAU_Signal"])
@@ -662,107 +662,33 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
 
 
 @app.get("/api/report")
-def generate_report(section: str = Query("all")):
-    """Generate market report. Uses Gemini AI for analysis when available."""
+def generate_report(section: str = Query("all"), interval: str = Query("1d")):
+    """Generate market report with deep Python-based technical analysis."""
     try:
         t0 = time.time()
         html_parts = []
-        
         sections_to_run = list(range(1, 12)) if section == "all" else [int(section)]
         
         for sec in sections_to_run:
             try:
-                if sec == 1:
-                    html_parts.append(report_top_performers_4weeks())
-                elif sec == 2:
-                    html_parts.append(report_top_performers_4days())
-                elif sec == 3:
-                    html_parts.append(report_earnings_next_10days())
-                elif sec == 4:
-                    html_parts.append(report_likely_up_this_week())
-                elif sec == 5:
-                    html_parts.append(report_likely_down_this_week())
-                elif sec == 6:
-                    html_parts.append(report_4day_outlook())
-                elif sec == 7:
-                    html_parts.append(report_sector_news())
-                elif sec == 8:
-                    html_parts.append(report_market_today())
-                elif sec == 9:
-                    html_parts.append(report_ai_tech_news())
-                elif sec == 10:
-                    html_parts.append(report_ema200_stocks())
-                elif sec == 11:
-                    html_parts.append(report_fibonacci_fallen())
+                if sec == 1: html_parts.append(report_top_performers_4weeks())
+                elif sec == 2: html_parts.append(report_top_performers_4days())
+                elif sec == 3: html_parts.append(report_earnings_next_10days())
+                elif sec == 4: html_parts.append(report_likely_up_this_week())
+                elif sec == 5: html_parts.append(report_likely_down_this_week())
+                elif sec == 6: html_parts.append(report_4day_outlook())
+                elif sec == 7: html_parts.append(report_sector_news())
+                elif sec == 8: html_parts.append(report_market_today())
+                elif sec == 9: html_parts.append(report_ai_tech_news())
+                elif sec == 10: html_parts.append(report_ema200_stocks(interval))
+                elif sec == 11: html_parts.append(report_fibonacci_fallen(interval))
             except Exception as e:
-                html_parts.append(f'<div class="rpt-section"><h2>Sección {sec} — Error</h2><p>{str(e)}</p></div>')
+                html_parts.append(f'<div class="rpt-section"><h2>Sección {sec} — Error</h2><p>{str(e)}</p>')
         
-        # Try to enhance with Gemini AI analysis
-        gemini_analysis = ""
-        try:
-            gemini_analysis = _gemini_enhance(sections_to_run, html_parts)
-        except:
-            pass
-        
-        final_html = "\n".join(html_parts)
-        if gemini_analysis:
-            final_html += gemini_analysis
-        
-        return {
-            "html": final_html,
-            "generation_time": round(time.time() - t0, 1),
-            "sections": sections_to_run,
-            "ai_enhanced": bool(gemini_analysis),
-        }
+        return {"html": "\n".join(html_parts), "generation_time": round(time.time() - t0, 1),
+                "sections": sections_to_run, "interval": interval}
     except Exception as e:
         return {"error": str(e), "html": ""}
-
-
-def _gemini_enhance(sections, html_parts):
-    """Use Gemini AI to add deep analysis to the report."""
-    import urllib.request, json
-    GEMINI_KEY = "AIzaSyDzjpolj7IDRBaLOuFXZBv4aRaxlBeNHF0"
-    
-    # Extract key data points from HTML for Gemini to analyze
-    summary = "Basándote en los siguientes datos del mercado de hoy, proporciona un análisis profesional en español:\n\n"
-    for i, html in enumerate(html_parts):
-        # Extract text from HTML (strip tags roughly)
-        import re
-        text = re.sub(r'<[^>]+>', ' ', html)
-        text = re.sub(r'\s+', ' ', text).strip()
-        summary += f"SECCIÓN {sections[i]}: {text[:800]}\n\n"
-    
-    summary += """
-Instrucciones:
-1. Genera un ANÁLISIS EJECUTIVO PROFESIONAL del mercado (en español)
-2. Incluye: tendencia general, sectores fuertes/débiles, riesgos principales, oportunidades
-3. Menciona niveles técnicos clave del S&P 500
-4. Da una perspectiva para los próximos 2-4 días
-5. Formato HTML con <h2>, <h3>, <p>, <b>, <ul><li>
-6. Máximo 500 palabras
-"""
-    
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
-        payload = json.dumps({
-            "contents": [{"parts": [{"text": summary}]}],
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000}
-        }).encode()
-        
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
-        
-        ai_text = data["candidates"][0]["content"]["parts"][0]["text"]
-        
-        return f"""<div class="rpt-section" style="border-left-color:#ff6b35">
-<h2>🧠 Análisis AI — Gemini</h2>
-<div class="rpt-narrative">{ai_text}</div>
-<p class="rpt-footer">Análisis generado por Google Gemini AI basado en datos de Yahoo Finance</p></div>"""
-    except Exception as e:
-        return f"""<div class="rpt-section" style="border-left-color:#ff6b35">
-<h2>🧠 Análisis AI</h2>
-<p class="rpt-narrative" style="color:#ff9800">Gemini AI no disponible: {str(e)[:100]}</p></div>"""
 
 
 # ═══ REPORT HELPER FUNCTIONS (Professional) ═══
@@ -787,6 +713,85 @@ REPORT_CSS = """
 .rpt-footer{font-size:10px;color:#666;margin-top:8px;font-style:italic}
 </style>
 """
+
+def _deep_analysis(sym, hist):
+    """Generate comprehensive technical analysis narrative for a stock using pure Python."""
+    c = hist["Close"].values.astype(float)
+    h = hist["High"].values.astype(float)
+    l = hist["Low"].values.astype(float)
+    v = hist["Volume"].values.astype(float)
+    price = c[-1]
+    
+    # EMAs
+    emas = _calc_emas(c)
+    rsi = _calc_rsi(c)
+    
+    # MACD
+    macd_line = pd.Series(c).ewm(span=12).mean().iloc[-1] - pd.Series(c).ewm(span=26).mean().iloc[-1]
+    macd_signal = (pd.Series(c).ewm(span=12).mean() - pd.Series(c).ewm(span=26).mean()).ewm(span=9).mean().iloc[-1]
+    macd_hist = macd_line - macd_signal
+    
+    # Bollinger Bands
+    sma20 = pd.Series(c).rolling(20).mean().iloc[-1] if len(c) >= 20 else price
+    std20 = pd.Series(c).rolling(20).std().iloc[-1] if len(c) >= 20 else 0
+    bb_upper = sma20 + 2*std20
+    bb_lower = sma20 - 2*std20
+    bb_position = "cerca de banda superior (sobrecompra)" if price > bb_upper - std20*0.5 else (
+        "cerca de banda inferior (sobreventa)" if price < bb_lower + std20*0.5 else "dentro de las bandas (normal)")
+    
+    # Volume analysis
+    vol_5d = np.mean(v[-5:]) if len(v) >= 5 else np.mean(v)
+    vol_20d = np.mean(v[-20:]) if len(v) >= 20 else np.mean(v)
+    vol_ratio = vol_5d / max(vol_20d, 1)
+    vol_text = "volumen alto confirma movimiento" if vol_ratio > 1.3 else (
+        "volumen bajo sugiere debilidad" if vol_ratio < 0.7 else "volumen normal")
+    
+    # Trend
+    pct_5d = ((c[-1]-c[-5])/c[-5])*100 if len(c) >= 5 else 0
+    pct_20d = ((c[-1]-c[-20])/c[-20])*100 if len(c) >= 20 else 0
+    
+    # EMA alignment
+    ema_bull = price > emas["ema9"] > emas["ema21"]
+    ema_bear = price < emas["ema9"] < emas["ema21"]
+    
+    # Build narrative
+    parts = []
+    
+    # Trend
+    if pct_5d > 3: parts.append(f"<b>Tendencia fuerte alcista</b> con {pct_5d:+.1f}% en 5 días")
+    elif pct_5d > 0.5: parts.append(f"<b>Tendencia alcista moderada</b> ({pct_5d:+.1f}% en 5 días)")
+    elif pct_5d < -3: parts.append(f"<b>Tendencia fuerte bajista</b> con {pct_5d:+.1f}% en 5 días")
+    elif pct_5d < -0.5: parts.append(f"<b>Tendencia bajista moderada</b> ({pct_5d:+.1f}% en 5 días)")
+    else: parts.append(f"<b>Movimiento lateral</b> ({pct_5d:+.1f}% en 5 días)")
+    
+    # EMAs
+    if ema_bull: parts.append("EMAs alineadas alcistamente (precio > EMA9 > EMA21)")
+    elif ema_bear: parts.append("EMAs alineadas bajistamente (precio < EMA9 < EMA21)")
+    else: parts.append("EMAs sin alineación clara — señal mixta")
+    
+    if emas["ema200"]:
+        if price > emas["ema200"]: parts.append(f"Sobre EMA200 (${emas['ema200']}) — tendencia de largo plazo alcista")
+        else: parts.append(f"<span class='down'>Bajo EMA200 (${emas['ema200']}) — tendencia de largo plazo bajista</span>")
+    
+    # RSI
+    if rsi > 70: parts.append(f"<span class='down'>RSI {rsi} — SOBRECOMPRA, riesgo de corrección inminente</span>")
+    elif rsi > 60: parts.append(f"RSI {rsi} — momentum fuerte pero acercándose a sobrecompra")
+    elif rsi < 30: parts.append(f"<span class='up'>RSI {rsi} — SOBREVENTA, posible rebote técnico</span>")
+    elif rsi < 40: parts.append(f"RSI {rsi} — momentum débil, posible oportunidad si hay soporte")
+    else: parts.append(f"RSI {rsi} — zona neutral")
+    
+    # MACD
+    if macd_hist > 0: parts.append(f"MACD positivo ({macd_hist:.2f}) — momentum comprador")
+    else: parts.append(f"MACD negativo ({macd_hist:.2f}) — momentum vendedor")
+    
+    # Volume
+    parts.append(f"Volumen: {vol_ratio:.1f}x promedio 20d — {vol_text}")
+    
+    # Bollinger
+    parts.append(f"Bollinger: {bb_position}")
+    
+    return ". ".join(parts) + "."
+
 
 def _safe_get_data(symbols, period="1mo"):
     """Get price data for a list of symbols."""
@@ -1204,7 +1209,7 @@ Las tendencias en AI (modelos de lenguaje, chips para inferencia, cloud AI) sigu
 <p class="rpt-footer">Fuente: Yahoo Finance | Sector AI/Tech/Semiconductores</p></div>"""
 
 
-def report_ema200_stocks():
+def report_ema200_stocks(interval="1d"):
     data = _safe_get_data(SP500[:100], "1y")
     near = {"above":[],"below":[]}
     
@@ -1253,7 +1258,7 @@ Se listan acciones dentro del ±5% de su EMA 200 diaria.</p>
 <p class="rpt-footer">Fuente: Yahoo Finance | EMA 200 en temporalidad diaria | {len(near["above"])+len(near["below"])} acciones encontradas</p></div>"""
 
 
-def report_fibonacci_fallen():
+def report_fibonacci_fallen(interval="1d"):
     candidates = list(dict.fromkeys(SP500[:120] + NASDAQ_100[:50]))
     data = _safe_get_data(candidates[:120], "6mo")
     
