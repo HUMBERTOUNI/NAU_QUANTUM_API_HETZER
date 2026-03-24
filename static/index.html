@@ -1342,7 +1342,7 @@ document.getElementById('runReportBtn').onclick = async () => {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 600000);
-    const resp = await fetch(`${API_BASE}/api/report?section=${section}`, { signal: controller.signal });
+    const resp = await fetch(`${API_BASE}/api/report?section=${section}&interval=${state.interval}`, { signal: controller.signal });
     clearTimeout(timeout);
     const data = await resp.json();
     loading.style.display = 'none';
