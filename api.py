@@ -322,6 +322,10 @@ def download_and_compute(sym, interval, prepost=False):
 # FAST SCANNER — downloads only what's needed, no full bar construction
 # ══════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════
+# FAST SCANNER — downloads only what's needed, no full bar construction
+# ══════════════════════════════════════════════════════════════
+
 def scan_fast(sym, interval):
     """Thread-safe scan: creates own indicator instance, downloads SHORT period."""
     try:
@@ -331,7 +335,8 @@ def scan_fast(sym, interval):
         yf_interval = yf_interval_map.get(interval, "1d")
         scan_period = SCAN_PERIOD_MAP.get(interval, "1y")
 
-        df, err = safe_download(sym, scan_period, yf_interval, False)
+        # FIX: prepost=True para alinear con el gráfico visual
+        df, err = safe_download(sym, scan_period, yf_interval, True)
         if err or df is None or df.empty:
             return None
 
@@ -357,7 +362,6 @@ def scan_fast(sym, interval):
         if len(df) < 50:
             return None
 
-        # CRITICAL: Create a NEW indicator instance for thread safety
         local_indicator = NAUQuantumAlphaIndicator()
         df = local_indicator.compute(df)
         last = df.iloc[-1]
@@ -369,12 +373,10 @@ def scan_fast(sym, interval):
         price = float(last["Close"])
         regime = {0:"BULL",1:"BEAR",2:"RANGE"}.get(int(last["NAU_Regime"]), "?")
 
-        # Calculate ATR for SL/TP
         highs = df["High"].iloc[-14:].values.astype(float)
         lows = df["Low"].iloc[-14:].values.astype(float)
         atr = float(np.mean(highs - lows))
 
-        # Get top factors
         factor_cols = ["NAU_Kalman_Score","NAU_Wavelet_Score","NAU_HMM_Score",
                        "NAU_Hurst_Score","NAU_OrderFlow_Score","NAU_Attention_Score"]
         factors = {}
@@ -394,191 +396,8 @@ def scan_fast(sym, interval):
     except Exception:
         return None
 
-
-def scan_vc_one(sym_info, interval):
-    """
-    Escáner estricto: Busca 2 señales consecutivas EXCLUSIVAMENTE en las últimas 4 velas CERRADAS.
-    """
-    sym = sym_info["s"]
-    try:
-        yf_interval_map = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h",
-                           "2h":"1h","4h":"1h","1d":"1d","1wk":"1wk","1mo":"1mo",
-                           "3mo":"3mo","6mo":"1mo","1y":"3mo"}
-        yf_int = yf_interval_map.get(interval, "1d")
-        scan_period = SCAN_PERIOD_MAP.get(interval, "1y")
-        
-        df, err = safe_download(sym, scan_period, yf_int, True) # True para alinear con tu preferencia prepost
-        if err or df is None or df.empty or len(df) < 50:
-            return None
-        
-        # Resampling logic (se mantiene igual)
-        resample_map = {"2h":"2h","4h":"4h","6mo":"6MS","1y":"YS"}
-        if interval in resample_map:
-            rs = resample_map[interval]
-            if rs in ("2h", "4h"):
-                from datetime import datetime as _dt
-                import calendar as _cal
-                _now = _dt.utcnow()
-                _ms = 14 - _cal.weekday(_now.year, 3, 1) % 7 + 7
-                _ns = 7 - _cal.weekday(_now.year, 11, 1) % 7
-                _dst = (_dt(_now.year, 3, _ms, 7) <= _now < _dt(_now.year, 11, _ns, 6))
-                _nopen = 13*60+30 if _dst else 14*60+30
-                _intmin = 120 if rs == "2h" else 240
-                df = df.resample(rs, offset=f"{_nopen % _intmin}min").agg(
-                    {"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
-            else:
-                df = df.resample(rs).agg(
-                    {"Open":"first","High":"max","Low":"min","Close":"last","Volume":"sum"}).dropna()
-        
-        if len(df) < 50: return None
-        
-        local_ind = NAUQuantumAlphaIndicator()
-        df = local_ind.compute(df)
-        if len(df) < 30: return None
-        
-        # 1. TRABAJAR SOLO CON VELAS CERRADAS (Excluir la última que se está formando)
-        completed = df.iloc[:-1]
-        
-        # Filtro de gap para alinear con lo que dibuja el frontend
-        gap_map = {"1m":120,"5m":600,"15m":1800,"30m":3600,"1h":7200,
-                   "2h":14400,"4h":28800,"1d":172800,"1wk":604800,"1mo":2592000}
-        min_gap = gap_map.get(interval, 7200)
-        
-        all_signals = []
-        last_signal_time = 0
-        
-        for idx_ts, row in completed.iterrows():
-            try: ts = int(idx_ts.timestamp())
-            except: ts = 0
-            
-            has_long = bool(row.get("NAU_Long", False))
-            has_short = bool(row.get("NAU_Short", False))
-            
-            if (has_long or has_short) and (ts - last_signal_time >= min_gap):
-                all_signals.append("LONG" if has_long else "SHORT")
-                last_signal_time = ts
-            else:
-                all_signals.append("NONE")
-        
-        if len(all_signals) < 24: return None
-        
-        # 2. EVALUACIÓN ESTRICTA: Las últimas 4 velas cerradas
-        last_4 = all_signals[-4:]
-        sigs_in_4 = [s for s in last_4 if s != "NONE"]
-        
-        # Condición A: Debe haber EXACTAMENTE 2 señales en esas 4 velas (ni 1, ni 3)
-        if len(sigs_in_4) != 2: return None
-        
-        # Condición B: Las dos señales deben ser de la MISMA dirección
-        if sigs_in_4[0] != sigs_in_4[1]: return None
-        
-        is_buy = sigs_in_4[0] == "LONG"
-        
-        # Condición C: Las 20 velas anteriores a esas 4 NO deben tener señales (Evitar falsos inicios)
-        prior_20 = all_signals[-24:-4]
-        if any(s != "NONE" for s in prior_20):
-            return None 
-
-        # Si sobrevivió hasta aquí, ES UNA SEÑAL PURA
-        current = df.iloc[-1]
-        price = float(current["Close"])
-        atr = float(np.mean(df["High"].iloc[-14:].values.astype(float) - df["Low"].iloc[-14:].values.astype(float)))
-        
-        sig_val = float(completed.iloc[-1]["NAU_Signal"])
-        conf_val = float(completed.iloc[-1]["NAU_Confidence"])
-        label = signal_label(sig_val, conf_val)
-        
-        if is_buy:
-            entry, sl = price, round(price - 1.5*atr, 2)
-            tp1, tp2, tp3 = round(price + 2*atr, 2), round(price + 3*atr, 2), round(price + 4.5*atr, 2)
-        else:
-            entry, sl = price, round(price + 1.5*atr, 2)
-            tp1, tp2, tp3 = round(price - 2*atr, 2), round(price - 3*atr, 2), round(price - 4.5*atr, 2)
-        
-        name = sym
-        for s in SYMBOLS_DB:
-            if s["s"] == sym:
-                name = s["n"]
-                break
-        
-        return {
-            "symbol": sym, "name": name, "label": label,
-            "direction": "LONG" if is_buy else "SHORT",
-            "consecutive": 2, "price": round(price, 2),
-            "entry": round(entry, 2), "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
-        }
-    except Exception:
-        return None
-
-# FIX: Función puente para que el Scanner procese la data correctamente
-def scan_bridge(sym_info, interval, min_confidence):
-    sym = sym_info["s"]
-    res = scan_fast(sym, interval)
-    if res and res["confidence"] >= min_confidence:
-        res["symbol"] = sym
-        res["index"] = " · ".join(sorted(INDEX_MEMBERSHIP.get(sym, {"OTHER"})))
-        res["reasoning"] = f"Confluencia IA: {res['signal']:+.1f}. Régimen: {res['regime']}."
-        res["entry"] = res["price"]
-        
-        # Calcular SL/TP en base al ATR
-        if res["signal"] > 0:
-            res["sl"] = res["price"] - 1.5 * res["atr"]
-            res["tp1"] = res["price"] + 2 * res["atr"]
-            res["tp2"] = res["price"] + 3 * res["atr"]
-            res["direction"] = "LONG"
-        else:
-            res["sl"] = res["price"] + 1.5 * res["atr"]
-            res["tp1"] = res["price"] - 2 * res["atr"]
-            res["tp2"] = res["price"] - 3 * res["atr"]
-            res["direction"] = "SHORT"
-        return res
-    return None
-
-@app.get("/api/scan")
-def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), index: str = Query("ALL")):
-    try:
-        universe = filter_universe(index)
-        max_map = {"ALL": 500, "S&P500": 500, "NASDAQ100": 103, "DOW30": 31, "RUSSELL2000": 341, "ETF": 100}
-        max_stocks = max_map.get(index, 300)
-        universe = universe[:max_stocks]
-        
-        t0 = time.time()
-        results = []
-        
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            future_map = {executor.submit(scan_bridge, si, interval, min_confidence): si for si in universe}
-            for future in as_completed(future_map):
-                try:
-                    r = future.result()
-                    if r: results.append(r)
-                except Exception:
-                    pass
-
-        results.sort(key=lambda x: abs(x.get("signal", 0)), reverse=True)
-        return {
-            "scan_results": results[:50],
-            "total_scanned": len(universe),
-            "total_found": len(results),
-            "scan_time": round(time.time() - t0, 1),
-            "interval": interval,
-            "index_filter": index
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-# ═══ OTHER ENDPOINTS ═══
-
 # Feature 4: Consecutive Signal Scanner (Señal V/C)
 def scan_vc_one(sym_info, interval):
-    """
-    Find stocks where the ONLY 2 consecutive signals are the most recent ones.
-    
-    Algorithm:
-    1. Get signals for last 20 completed candles
-    2. Scan from most recent backward to find the first pair of consecutive BUY or SELL
-    3. Check ALL candles before that pair — if ANY has the same signal type → REJECT
-    4. This ensures we catch ONLY the start of a new trend
-    """
     sym = sym_info["s"]
     try:
         yf_interval_map = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h",
@@ -587,7 +406,8 @@ def scan_vc_one(sym_info, interval):
         yf_int = yf_interval_map.get(interval, "1d")
         scan_period = SCAN_PERIOD_MAP.get(interval, "1y")
         
-        df, err = safe_download(sym, scan_period, yf_int, False)
+        # FIX: prepost=True para alinear con el gráfico visual
+        df, err = safe_download(sym, scan_period, yf_int, True)
         if err or df is None or df.empty or len(df) < 50:
             return None
         
@@ -618,20 +438,20 @@ def scan_vc_one(sym_info, interval):
         if len(df) < 10:
             return None
         
-        # Apply the SAME signal gap filter as the chart display
-        gap_map = {"1m":120,"5m":600,"15m":1800,"30m":3600,"1h":7200,
-                   "2h":14400,"4h":28800,"1d":172800,"1wk":604800,"1mo":2592000}
-        min_gap = gap_map.get(interval, 7200)
+        completed = df.iloc[:-1]  # Solo velas cerradas
         
-        completed = df.iloc[:-1]  # Exclude current forming candle
+        # FIX CRÍTICO: Alineación MILIMÉTRICA de tiempos y GAPs con el frontend
+        min_gap = 172800 if interval == "1d" else (604800 if interval == "1wk" else 7200)
+        PERU_OFFSET_SEC = -5 * 3600
         
-        # Build signal list WITH gap filter (exactly like chart markers)
         all_signals = []
         last_signal_time = 0
         
         for idx_ts, row in completed.iterrows():
-            try: ts = int(idx_ts.timestamp())
-            except: ts = 0
+            try: ts = int(idx_ts.timestamp()) + PERU_OFFSET_SEC
+            except:
+                try: ts = int(pd.Timestamp(idx_ts).timestamp()) + PERU_OFFSET_SEC
+                except: ts = 0
             
             has_long = bool(row.get("NAU_Long", False))
             has_short = bool(row.get("NAU_Short", False))
@@ -645,40 +465,29 @@ def scan_vc_one(sym_info, interval):
         if len(all_signals) < 6:
             return None
         
-        # === NEW LOGIC: Check LAST 4 CANDLES for exactly 2 consecutive signals ===
+        # Filtrar exactamente las últimas 4 velas cerradas
         last_4 = all_signals[-4:]
-        
-        # Find signals in the last 4 candles
         sigs_in_4 = [(i, s) for i, s in enumerate(last_4) if s != "NONE"]
         
-        # Must have exactly 2 signals in the last 4 candles
         if len(sigs_in_4) != 2:
             return None
         
-        # The 2 signals must be the same direction
         if sigs_in_4[0][1] != sigs_in_4[1][1]:
             return None
         
-        # The 2 signals must be consecutive (adjacent or with max 1 NONE between them)
-        pos1, pos2 = sigs_in_4[0][0], sigs_in_4[1][0]
-        if pos2 - pos1 > 2:
-            return None  # Too far apart within the 4 candles
-        
         is_buy = sigs_in_4[0][1] == "LONG"
         
-        # === Check that NO signals exist in the 20 candles BEFORE the last 4 ===
+        # Asegurar que las 20 anteriores estén limpias
         prior = all_signals[:-4]
         prior_check = prior[-20:] if len(prior) >= 20 else prior
         for s in prior_check:
             if s != "NONE":
-                return None  # Prior signal exists → not a new trend
+                return None
         
-        # Get the label for display
-        sig_val = float(df.iloc[-2]["NAU_Signal"])
-        conf_val = float(df.iloc[-2]["NAU_Confidence"])
+        sig_val = float(completed.iloc[-1]["NAU_Signal"])
+        conf_val = float(completed.iloc[-1]["NAU_Confidence"])
         label = signal_label(sig_val, conf_val)
         
-        # MATCH: These are the FIRST 2 consecutive signals of this type = new trend start
         current = df.iloc[-1]
         price = float(current["Close"])
         atr = float(np.mean(df["High"].iloc[-14:].values.astype(float) - df["Low"].iloc[-14:].values.astype(float)))
@@ -705,25 +514,66 @@ def scan_vc_one(sym_info, interval):
     except Exception:
         return None
 
+def scan_bridge(sym_info, interval, min_confidence):
+    sym = sym_info["s"]
+    res = scan_fast(sym, interval)
+    if res and res["confidence"] >= min_confidence:
+        res["symbol"] = sym
+        res["index"] = " · ".join(sorted(INDEX_MEMBERSHIP.get(sym, {"OTHER"})))
+        res["reasoning"] = f"Confluencia IA: {res['signal']:+.1f}. Régimen: {res['regime']}."
+        res["entry"] = res["price"]
+        
+        if res["signal"] > 0:
+            res["sl"] = res["price"] - 1.5 * res["atr"]
+            res["tp1"] = res["price"] + 2 * res["atr"]
+            res["tp2"] = res["price"] + 3 * res["atr"]
+            res["direction"] = "LONG"
+        else:
+            res["sl"] = res["price"] + 1.5 * res["atr"]
+            res["tp1"] = res["price"] - 2 * res["atr"]
+            res["tp2"] = res["price"] - 3 * res["atr"]
+            res["direction"] = "SHORT"
+        return res
+    return None
+
+@app.get("/api/scan")
+def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), index: str = Query("ALL")):
+    try:
+        universe = filter_universe(index)
+        max_map = {"ALL": 5000, "S&P500": 500, "NASDAQ100": 103, "DOW30": 31, "RUSSELL2000": 341, "ETF": 100}
+        max_stocks = max_map.get(index, 2500)
+        universe = universe[:max_stocks]
+        
+        t0 = time.time()
+        results = []
+        
+        # FIX: Subido a 32 Hilos para que Hetzner destruya las búsquedas en segundos y no aborte
+        with ThreadPoolExecutor(max_workers=32) as executor:
+            future_map = {executor.submit(scan_bridge, si, interval, min_confidence): si for si in universe}
+            for future in as_completed(future_map):
+                try:
+                    r = future.result()
+                    if r: results.append(r)
+                except Exception:
+                    pass
+
+        results.sort(key=lambda x: abs(x.get("signal", 0)), reverse=True)
+        return {
+            "scan_results": results[:50],
+            "total_scanned": len(universe),
+            "total_found": len(results),
+            "scan_time": round(time.time() - t0, 1),
+            "interval": interval,
+            "index_filter": index
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/api/scan_vc")
 def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
-    """
-    Find stocks with 2+ consecutive buy/sell signals.
-    Pages organized by importance:
-    1 = S&P500 + NASDAQ100 + DOW30 (top ~500)
-    2 = Russell 2000 top + MidCap 400 (~400)
-    3 = Growth/Value stocks (~500)
-    4 = ETFs + Crypto + remaining (~200)
-    """
     try:
         from stock_universe import SP500, NASDAQ_100, DOW_30, RUSSELL_2000_TOP, SP_MIDCAP_400, ADDITIONAL_STOCKS, ETFS, CRYPTO, INDICES, COMMODITIES_FOREX
         
-        # Build curated pages by investment quality
-        # Tanda 1: Top 200 large-cap + 300 innovative leaders
-        # Tanda 2: Mid-cap with upside (Russell + MidCap)  
-        # Tanda 3: Growth/Value with high potential
-        # Tanda 4: ETFs + Crypto + Indices + remaining
         seen = set()
         def make_page(lists, max_n=500):
             page_syms = []
@@ -749,9 +599,9 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
         
         t0 = time.time()
         results = []
-        errors = 0
         
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        # FIX: Subido a 32 Hilos para que Hetzner aproveche todo el procesador
+        with ThreadPoolExecutor(max_workers=32) as executor:
             future_map = {executor.submit(scan_vc_one, si, interval): si for si in universe}
             for future in as_completed(future_map):
                 try:
@@ -759,7 +609,7 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
                     if r is not None:
                         results.append(r)
                 except Exception:
-                    errors += 1
+                    pass
         
         results.sort(key=lambda x: x.get("consecutive", 0), reverse=True)
         return {
