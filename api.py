@@ -117,17 +117,13 @@ def compute_technicals(df):
 
 import threading
 
-# yfinance is NOT thread-safe — downloads must be serialized
-import requests
 
-import requests
-
-# ELIMINAMOS EL _download_lock GLOBAL. 
-# Ahora cada hilo tendrá su propia sesión para que tus 8 CPUs trabajen en paralelo real.
+# ELIMINAMOS EL _download_lock GLOBAL para aprovechar los 8 CPUs.
 def safe_download(sym, period, interval, prepost=False):
-    session = requests.Session()
     try:
-        raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False, session=session)
+        # IMPORTANTE: No le pasamos "session". Dejamos que yfinance maneje su 
+        # propia sesión curl_cffi anti-bloqueos de forma automática.
+        raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False)
     except Exception as e:
         return None, str(e)
         
