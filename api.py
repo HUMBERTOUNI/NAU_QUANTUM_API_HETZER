@@ -119,9 +119,12 @@ import threading
 
 
 # ELIMINAMOS EL _download_lock GLOBAL para aprovechar los 8 CPUs.
+# 1. DESCARGA BLINDADA CONTRA COLISIONES DE HILOS
 def safe_download(sym, period, interval, prepost=False):
     try:
-        raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False)
+        # Usar Ticker().history() en lugar de download() evita que las acciones se mezclen
+        t = yf.Ticker(sym)
+        raw = t.history(period=period, interval=interval, prepost=prepost)
     except Exception as e:
         return None, str(e)
         
@@ -129,7 +132,6 @@ def safe_download(sym, period, interval, prepost=False):
     
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.get_level_values(0)
-        
     raw = raw.loc[:, ~raw.columns.duplicated(keep='first')]
     
     rename = {}
@@ -144,18 +146,49 @@ def safe_download(sym, period, interval, prepost=False):
     raw = raw.rename(columns=rename)
     needed = ['Open','High','Low','Close','Volume']
     missing = [c for c in needed if c not in raw.columns]
-    
     if missing: return None, f"Missing: {missing}"
     
     df = raw[needed].copy()
     for col in needed:
         s = df[col]
-        if isinstance(s, pd.DataFrame): s = s.iloc[:,0]
-        df[col] = pd.to_numeric(s, errors='coerce')
-        
+        # FIX: Forzar dimensión 1D para evitar el error de los reportes
+        if isinstance(s, pd.DataFrame): 
+            df[col] = pd.to_numeric(s.iloc[:,0], errors='coerce')
+        else:
+            df[col] = pd.to_numeric(s, errors='coerce')
+            
     df['Volume'] = df['Volume'].fillna(0)
     df = df.dropna(subset=['Open','High','Low','Close'])
     return df, None
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# 2. DESCARGA DE REPORTES CORREGIDA (1D)
+def _safe_get_data(symbols, period="1mo"):
+    results = {}
+    def fetch(sym):
+        try:
+            t = yf.Ticker(sym)
+            hist = t.history(period=period, interval="1d")
+            if hist is not None and not hist.empty and len(hist) >= 2:
+                if isinstance(hist.columns, pd.MultiIndex):
+                    hist.columns = hist.columns.get_level_values(0)
+                hist = hist.loc[:, ~hist.columns.duplicated(keep='first')]
+                
+                # FIX: Forzar Cierre a 1D para la IA
+                if isinstance(hist.get('Close'), pd.DataFrame):
+                    hist['Close'] = hist['Close'].iloc[:, 0]
+                return sym, hist
+        except: pass
+        return sym, None
+        
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_sym = {executor.submit(fetch, sym): sym for sym in symbols}
+        for future in as_completed(future_to_sym):
+            sym, hist = future.result()
+            if hist is not None:
+                results[sym] = hist
+    return results
 
 # ---- ¡ESTA ES LA FUNCIÓN QUE SE HABÍA BORRADO POR ERROR! ----
 def get_prev_close(sym):
@@ -477,51 +510,61 @@ def scan_vc_one(sym_info, interval):
     except Exception:
         return None
 
+# FIX: Función puente para que el Scanner procese la data correctamente
+def scan_bridge(sym_info, interval, min_confidence):
+    sym = sym_info["s"]
+    res = scan_fast(sym, interval)
+    if res and res["confidence"] >= min_confidence:
+        res["symbol"] = sym
+        res["index"] = " · ".join(sorted(INDEX_MEMBERSHIP.get(sym, {"OTHER"})))
+        res["reasoning"] = f"Confluencia IA: {res['signal']:+.1f}. Régimen: {res['regime']}."
+        res["entry"] = res["price"]
+        
+        # Calcular SL/TP en base al ATR
+        if res["signal"] > 0:
+            res["sl"] = res["price"] - 1.5 * res["atr"]
+            res["tp1"] = res["price"] + 2 * res["atr"]
+            res["tp2"] = res["price"] + 3 * res["atr"]
+            res["direction"] = "LONG"
+        else:
+            res["sl"] = res["price"] + 1.5 * res["atr"]
+            res["tp1"] = res["price"] - 2 * res["atr"]
+            res["tp2"] = res["price"] - 3 * res["atr"]
+            res["direction"] = "SHORT"
+        return res
+    return None
+
+@app.get("/api/scan")
 def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), index: str = Query("ALL")):
-    """Professional parallel scanner. Always returns valid JSON."""
     try:
         universe = filter_universe(index)
-        # Limit to keep scan time reasonable (~3s per stock serialized)
-        max_map = {"ALL": 100, "S&P500": 100, "NASDAQ100": 103, "DOW30": 31,
-                   "RUSSELL2000": 100, "MIDCAP400": 100, "GROWTH": 100,
-                   "ETF": 37, "CRYPTO": 12, "INDEX": 6, "COMM/FX": 8}
-        max_stocks = max_map.get(index, 100)
+        max_map = {"ALL": 500, "S&P500": 500, "NASDAQ100": 103, "DOW30": 31, "RUSSELL2000": 341, "ETF": 100}
+        max_stocks = max_map.get(index, 300)
         universe = universe[:max_stocks]
         
         t0 = time.time()
         results = []
-        errors = 0
-
-        # 4 workers — downloads are serialized for data integrity
+        
         with ThreadPoolExecutor(max_workers=8) as executor:
-            future_map = {executor.submit(scan_one, si, interval, min_confidence): si for si in universe}
+            future_map = {executor.submit(scan_bridge, si, interval, min_confidence): si for si in universe}
             for future in as_completed(future_map):
                 try:
                     r = future.result()
-                    if r is not None:
-                        results.append(r)
+                    if r: results.append(r)
                 except Exception:
-                    errors += 1
+                    pass
 
-        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        results.sort(key=lambda x: abs(x.get("signal", 0)), reverse=True)
         return {
             "scan_results": results[:50],
             "total_scanned": len(universe),
             "total_found": len(results),
-            "errors": errors,
             "scan_time": round(time.time() - t0, 1),
             "interval": interval,
-            "index_filter": index,
-            "timestamp": int(time.time()),
+            "index_filter": index
         }
     except Exception as e:
-        return {
-            "scan_results": [], "total_scanned": 0, "total_found": 0,
-            "errors": 1, "scan_time": 0, "error": str(e),
-            "interval": interval, "index_filter": index,
-            "timestamp": int(time.time()),
-        }
-
+        return {"error": str(e)}
 
 # ═══ OTHER ENDPOINTS ═══
 
@@ -868,18 +911,67 @@ def _deep_analysis(sym, hist):
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# 1. DESCARGA BLINDADA CONTRA COLISIONES DE HILOS
+def safe_download(sym, period, interval, prepost=False):
+    try:
+        # Usar Ticker().history() en lugar de download() evita que las acciones se mezclen
+        t = yf.Ticker(sym)
+        raw = t.history(period=period, interval=interval, prepost=prepost)
+    except Exception as e:
+        return None, str(e)
+        
+    if raw is None or raw.empty: return None, "Empty"
+    
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+    raw = raw.loc[:, ~raw.columns.duplicated(keep='first')]
+    
+    rename = {}
+    for c in raw.columns:
+        cl = str(c).lower().strip()
+        if cl == 'open': rename[c] = 'Open'
+        elif cl == 'high': rename[c] = 'High'
+        elif cl == 'low': rename[c] = 'Low'
+        elif cl in ('close','adj close'): rename[c] = 'Close'
+        elif cl == 'volume': rename[c] = 'Volume'
+        
+    raw = raw.rename(columns=rename)
+    needed = ['Open','High','Low','Close','Volume']
+    missing = [c for c in needed if c not in raw.columns]
+    if missing: return None, f"Missing: {missing}"
+    
+    df = raw[needed].copy()
+    for col in needed:
+        s = df[col]
+        # FIX: Forzar dimensión 1D para evitar el error de los reportes
+        if isinstance(s, pd.DataFrame): 
+            df[col] = pd.to_numeric(s.iloc[:,0], errors='coerce')
+        else:
+            df[col] = pd.to_numeric(s, errors='coerce')
+            
+    df['Volume'] = df['Volume'].fillna(0)
+    df = df.dropna(subset=['Open','High','Low','Close'])
+    return df, None
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# 2. DESCARGA DE REPORTES CORREGIDA (1D)
 def _safe_get_data(symbols, period="1mo"):
-    """Descarga paralela de datos para reportes aprovechando los 8 núcleos."""
     results = {}
     def fetch(sym):
         try:
-            hist = yf.download(sym, period=period, interval="1d", progress=False, auto_adjust=True)
+            t = yf.Ticker(sym)
+            hist = t.history(period=period, interval="1d")
             if hist is not None and not hist.empty and len(hist) >= 2:
                 if isinstance(hist.columns, pd.MultiIndex):
                     hist.columns = hist.columns.get_level_values(0)
+                hist = hist.loc[:, ~hist.columns.duplicated(keep='first')]
+                
+                # FIX: Forzar Cierre a 1D para la IA
+                if isinstance(hist.get('Close'), pd.DataFrame):
+                    hist['Close'] = hist['Close'].iloc[:, 0]
                 return sym, hist
-        except:
-            pass
+        except: pass
         return sym, None
         
     with ThreadPoolExecutor(max_workers=8) as executor:
