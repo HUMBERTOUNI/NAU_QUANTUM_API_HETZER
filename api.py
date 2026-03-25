@@ -866,18 +866,28 @@ def _deep_analysis(sym, hist):
     return ". ".join(parts) + "."
 
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 def _safe_get_data(symbols, period="1mo"):
-    """Get price data for a list of symbols."""
+    """Descarga paralela de datos para reportes aprovechando los 8 núcleos."""
     results = {}
-    for sym in symbols:
+    def fetch(sym):
         try:
             hist = yf.download(sym, period=period, interval="1d", progress=False, auto_adjust=True)
             if hist is not None and not hist.empty and len(hist) >= 2:
                 if isinstance(hist.columns, pd.MultiIndex):
                     hist.columns = hist.columns.get_level_values(0)
-                results[sym] = hist
+                return sym, hist
         except:
             pass
+        return sym, None
+        
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_sym = {executor.submit(fetch, sym): sym for sym in symbols}
+        for future in as_completed(future_to_sym):
+            sym, hist = future.result()
+            if hist is not None:
+                results[sym] = hist
     return results
 
 def _calc_rsi(close_arr, period=14):
