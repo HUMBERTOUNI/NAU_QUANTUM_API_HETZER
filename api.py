@@ -120,38 +120,48 @@ import threading
 # yfinance is NOT thread-safe — downloads must be serialized
 import requests
 
+import requests
+
 # ELIMINAMOS EL _download_lock GLOBAL. 
 # Ahora cada hilo tendrá su propia sesión para que tus 8 CPUs trabajen en paralelo real.
 def safe_download(sym, period, interval, prepost=False):
+    session = requests.Session()
     try:
-        # Dejamos que yfinance maneje su propia sesión anti-bloqueos
-        raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False)
+        raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False, session=session)
     except Exception as e:
         return None, str(e)
-    
+        
     if raw is None or raw.empty: return None, "Empty"
+    
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.get_level_values(0)
+        
     raw = raw.loc[:, ~raw.columns.duplicated(keep='first')]
-    # ... (el resto de la función sigue igual hacia abajo)
-
-def get_prev_close(sym):
-    ck = f"pc:{sym}"
-    if ck in PREV_CLOSE_CACHE and time.time() - PREV_CLOSE_CACHE[ck][1] < 3600:
-        return PREV_CLOSE_CACHE[ck][0]
-    try:
-        t = yf.Ticker(sym)
-        info = t.fast_info
-        pc = float(info.get("previousClose", 0) or info.get("regularMarketPreviousClose", 0))
-        if pc > 0:
-            PREV_CLOSE_CACHE[ck] = (pc, time.time())
-            return pc
-    except:
-        pass
-    return 0   
-
-# Peru timezone offset: UTC-5 = -18000 seconds
-PERU_OFFSET = -5 * 3600
+    
+    rename = {}
+    for c in raw.columns:
+        cl = str(c).lower().strip()
+        if cl == 'open': rename[c] = 'Open'
+        elif cl == 'high': rename[c] = 'High'
+        elif cl == 'low': rename[c] = 'Low'
+        elif cl in ('close','adj close'): rename[c] = 'Close'
+        elif cl == 'volume': rename[c] = 'Volume'
+        
+    raw = raw.rename(columns=rename)
+    needed = ['Open','High','Low','Close','Volume']
+    missing = [c for c in needed if c not in raw.columns]
+    
+    if missing: return None, f"Missing: {missing}"
+    
+    df = raw[needed].copy()
+    for col in needed:
+        s = df[col]
+        if isinstance(s, pd.DataFrame): s = s.iloc[:,0]
+        df[col] = pd.to_numeric(s, errors='coerce')
+        
+    df['Volume'] = df['Volume'].fillna(0)
+    df = df.dropna(subset=['Open','High','Low','Close'])
+    return df, None
 
 def download_and_compute(sym, interval, prepost=False):
     ck = f"{sym}:{interval}:{prepost}"
