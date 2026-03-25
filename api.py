@@ -121,8 +121,6 @@ import threading
 # ELIMINAMOS EL _download_lock GLOBAL para aprovechar los 8 CPUs.
 def safe_download(sym, period, interval, prepost=False):
     try:
-        # IMPORTANTE: No le pasamos "session". Dejamos que yfinance maneje su 
-        # propia sesión curl_cffi anti-bloqueos de forma automática.
         raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False)
     except Exception as e:
         return None, str(e)
@@ -158,6 +156,22 @@ def safe_download(sym, period, interval, prepost=False):
     df['Volume'] = df['Volume'].fillna(0)
     df = df.dropna(subset=['Open','High','Low','Close'])
     return df, None
+
+# ---- ¡ESTA ES LA FUNCIÓN QUE SE HABÍA BORRADO POR ERROR! ----
+def get_prev_close(sym):
+    ck = f"pc:{sym}"
+    if ck in PREV_CLOSE_CACHE and time.time() - PREV_CLOSE_CACHE[ck][1] < 3600:
+        return PREV_CLOSE_CACHE[ck][0]
+    try:
+        t = yf.Ticker(sym)
+        info = t.fast_info
+        pc = float(info.get("previousClose", 0) or info.get("regularMarketPreviousClose", 0))
+        if pc > 0:
+            PREV_CLOSE_CACHE[ck] = (pc, time.time())
+            return pc
+    except:
+        pass
+    return 0
 
 def download_and_compute(sym, interval, prepost=False):
     ck = f"{sym}:{interval}:{prepost}"
