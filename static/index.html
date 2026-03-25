@@ -829,14 +829,12 @@ function renderChart() {
   // Signals markers with custom colors and sizes
   if (state.indicators.signals && chartData.signals) {
     const c = getColors();
+    const markers = [];
+    let lastTime = 0;
+    const minGap = state.interval === '1d' ? 86400*2 : state.interval === '1wk' ? 86400*7 : 3600*2;
+    // Map signalSize to marker size (1-4 scale for lightweight-charts)
     const sizeMap = {10: 1, 12: 2, 14: 3, 16: 3, 18: 4};
     const markerSize = sizeMap[c.signalSize] || 2;
-    // Display gap filter — only for visual clarity, signals always exist in data
-    const gapMap = {'1m':120,'5m':600,'15m':1800,'30m':3600,'1h':7200,
-                    '2h':14400,'4h':28800,'1d':172800,'1wk':604800,'1mo':2592000};
-    const minGap = gapMap[state.interval] || 7200;
-    let lastTime = 0;
-    const markers = [];
     chartData.signals.forEach(s => {
       if (s.time - lastTime < minGap) return;
       lastTime = s.time;
