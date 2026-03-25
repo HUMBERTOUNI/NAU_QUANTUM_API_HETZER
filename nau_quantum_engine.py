@@ -115,22 +115,19 @@ class AdaptiveKalmanFilter(KalmanFilter):
 class WaveletAnalyzer:
     """
     Continuous Wavelet Transform (CWT) for multi-scale price analysis.
-    Uses Morlet wavelet to decompose price into different frequency components.
+    CORREGIDO: Implementación estrictamente causal para evitar repintado (Lookahead Bias).
     """
     def __init__(self, scales=None):
         self.scales = scales or np.arange(2, 64, 2)
         
     def morlet_wavelet(self, t, omega0=6.0):
-        """Morlet wavelet function."""
         return np.pi**(-0.25) * np.exp(1j * omega0 * t) * np.exp(-t**2 / 2)
     
     def cwt(self, data):
-        """Compute Continuous Wavelet Transform."""
         n = len(data)
         coefficients = np.zeros((len(self.scales), n))
         
         for i, scale in enumerate(self.scales):
-            # Limit kernel size to not exceed data length
             kernel_half = int(4 * scale)
             if kernel_half * 2 + 1 > n:
                 kernel_half = max(1, (n - 1) // 2)
@@ -138,118 +135,72 @@ class WaveletAnalyzer:
             wavelet = np.real(self.morlet_wavelet(t))
             wavelet = wavelet / np.sqrt(max(scale, 1))
             
-            # Convolve with data - ensure output matches input length
-            conv = np.convolve(data, wavelet, mode='same')
-            if len(conv) >= n:
-                coefficients[i] = conv[:n]
-            else:
-                coefficients[i, :len(conv)] = conv
+            # USO CAUSAL: mode='full' asegura que el índice 'i' solo vea hasta 'data[i]'
+            conv = np.convolve(data, wavelet, mode='full')
+            # Extraemos exactamente la ventana que no mira al futuro
+            coefficients[i] = conv[:n]
             
         return coefficients
     
     def get_dominant_cycle(self, data):
-        """Find the dominant cycle length in the data."""
         coefficients = self.cwt(data)
         power = np.abs(coefficients)**2
         dominant_scale_idx = np.argmax(np.mean(power, axis=1))
         return self.scales[dominant_scale_idx]
     
     def get_trend_component(self, data, threshold_scale=20):
-        """Extract trend component (low-frequency)."""
         coefficients = self.cwt(data)
         mask = self.scales >= threshold_scale
         if not np.any(mask):
             return np.zeros(len(data))
         trend = np.mean(coefficients[mask], axis=0)
-        if len(trend) != len(data):
-            trend = np.interp(np.linspace(0, 1, len(data)), np.linspace(0, 1, len(trend)), trend)
         return trend
     
     def get_noise_component(self, data, threshold_scale=5):
-        """Extract noise component (high-frequency)."""
         coefficients = self.cwt(data)
         mask = self.scales <= threshold_scale
         noise = np.mean(np.abs(coefficients[mask]), axis=0)
-        return noise
+        return noise   
 
 
 class HiddenMarkovModel:
     """
-    Gaussian Hidden Markov Model for market regime detection.
-    States: Bull Market, Bear Market, Sideways/Consolidation
-    Uses Baum-Welch for parameter estimation (simplified).
+    Regime detection.
+    CORREGIDO: Ventana rodante y filtrado hacia adelante. Sin algoritmo Viterbi global
+    para erradicar el cambio de señales en el pasado.
     """
     def __init__(self, n_states=3, n_iterations=50):
         self.n_states = n_states
-        self.n_iterations = n_iterations
-        # Transition matrix (initialized with slight persistence bias)
-        self.A = np.array([
-            [0.7, 0.15, 0.15],  # Bull -> Bull/Bear/Sideways
-            [0.15, 0.7, 0.15],  # Bear -> Bull/Bear/Sideways
-            [0.2, 0.2, 0.6],    # Sideways -> Bull/Bear/Sideways
-        ])
-        # State means and variances for returns
-        self.means = np.array([0.002, -0.002, 0.0])     # Bull, Bear, Sideways
-        self.stds = np.array([0.01, 0.015, 0.005])      # Volatilities
-        self.pi = np.array([0.33, 0.33, 0.34])          # Initial state probs
-        
-    def _emission_prob(self, x, state):
-        """Gaussian emission probability."""
-        return norm.pdf(x, self.means[state], self.stds[state])
-    
-    def viterbi(self, observations):
-        """
-        Viterbi algorithm to find most likely state sequence.
-        Returns: state sequence (0=Bull, 1=Bear, 2=Sideways)
-        """
-        T = len(observations)
-        N = self.n_states
-        
-        # Initialize
-        delta = np.zeros((T, N))
-        psi = np.zeros((T, N), dtype=int)
-        
-        for s in range(N):
-            delta[0, s] = np.log(self.pi[s] + 1e-300) + \
-                          np.log(self._emission_prob(observations[0], s) + 1e-300)
-        
-        # Recursion
-        for t in range(1, T):
-            for s in range(N):
-                trans_probs = delta[t-1] + np.log(self.A[:, s] + 1e-300)
-                psi[t, s] = np.argmax(trans_probs)
-                delta[t, s] = trans_probs[psi[t, s]] + \
-                              np.log(self._emission_prob(observations[t], s) + 1e-300)
-        
-        # Backtracking
-        states = np.zeros(T, dtype=int)
-        states[-1] = np.argmax(delta[-1])
-        for t in range(T-2, -1, -1):
-            states[t] = psi[t+1, states[t+1]]
-        
-        return states
     
     def fit_and_predict(self, returns):
-        """Simplified EM fitting + Viterbi prediction."""
-        if len(returns) < 30:
-            return np.ones(len(returns), dtype=int) * 2  # Default to sideways
+        """Detección de régimen estrictamente causal (rolling window)."""
+        n = len(returns)
+        states = np.ones(n, dtype=int) * 2  # Por defecto: Sideways
+        if n < 30:
+            return states
         
-        # Estimate parameters from data
-        sorted_returns = np.sort(returns)
-        n = len(sorted_returns)
-        # Cluster into 3 regimes by percentile
-        bear_data = sorted_returns[:n//3]
-        sideways_data = sorted_returns[n//3:2*n//3]
-        bull_data = sorted_returns[2*n//3:]
-        
-        self.means = np.array([np.mean(bull_data), np.mean(bear_data), np.mean(sideways_data)])
-        self.stds = np.array([
-            max(np.std(bull_data), 1e-6),
-            max(np.std(bear_data), 1e-6),
-            max(np.std(sideways_data), 1e-6)
-        ])
-        
-        return self.viterbi(returns)
+        # Evaluar el régimen vela por vela mirando solo hacia atrás (max 252 periodos)
+        for i in range(30, n):
+            # Historial estrictamente pasado
+            past_returns = returns[max(0, i-252):i]
+            sorted_past = np.sort(past_returns)
+            k = len(sorted_past)
+            
+            # Definir umbrales dinámicos basados en la volatilidad pasada
+            bear_thresh = sorted_past[k//3]
+            bull_thresh = sorted_past[2*k//3]
+            
+            # Tendencia reciente (últimos 5 días)
+            recent_trend = np.mean(returns[max(0, i-5):i+1])
+            
+            if recent_trend > bull_thresh:
+                states[i] = 0  # Bull
+            elif recent_trend < bear_thresh:
+                states[i] = 1  # Bear
+            else:
+                states[i] = 2  # Sideways
+                
+        return states
 
 
 class BayesianAnalyzer:
@@ -614,25 +565,53 @@ class TemporalAttention:
         return np.clip(np.mean(scores)*5000, -100, 100)
 
 class RLSignalOptimizer:
-    """Q-Learning adaptive signal optimizer."""
+    """
+    Q-Learning adaptive signal optimizer.
+    CORREGIDO: Recompensa retrasada (causal) y semillas fijas para consistencia absoluta.
+    """
     def __init__(self, alpha=0.1, gamma=0.95, epsilon=0.1):
-        self.alpha=alpha; self.gamma=gamma; self.epsilon=epsilon
-        self.Q=np.random.uniform(0,0.1,(5,3,5,5))
-        self.mults=np.array([-1.0,-0.5,0.0,0.5,1.0])
+        self.alpha = alpha; self.gamma = gamma; self.epsilon = epsilon
+        np.random.seed(42)  # Semilla global para consistencia
+        self.Q = np.random.uniform(0, 0.1, (5, 3, 5, 5))
+        self.mults = np.array([-1.0, -0.5, 0.0, 0.5, 1.0])
+        
     def optimize(self, closes, returns, raw_signal, window=50):
-        n=len(closes); opt=np.zeros(n)
+        n = len(closes); opt = np.zeros(n)
+        np.random.seed(42)  # Forzar determinismo en cada escaneo
+        
+        prev_st = None
+        prev_a = None
+        
         for i in range(window, n):
-            ti=np.clip(int((raw_signal[i]+100)/40),0,4)
-            vi=np.clip(int(np.std(returns[max(0,i-window):i])*300),0,2)
-            mi=np.clip(int((np.mean(returns[max(0,i-5):i])*1000+100)/40),0,4)
-            st=(ti,vi,mi)
-            a=np.random.randint(5) if np.random.random()<self.epsilon else np.argmax(self.Q[st])
-            opt[i]=raw_signal[i]*(0.5+0.5*self.mults[a])
-            if i+1<n:
-                rw=np.clip(np.sign(opt[i])*returns[i+1]*100,-1,1)
-                ns=(np.clip(int((raw_signal[min(i+1,n-1)]+100)/40),0,4),vi,np.clip(int((np.mean(returns[max(0,i-4):i+1])*1000+100)/40),0,4))
-                self.Q[st+(a,)]+=self.alpha*(rw+self.gamma*np.max(self.Q[ns])-self.Q[st+(a,)])
-            self.epsilon=max(0.01,self.epsilon*0.999)
+            # Estado actual mirando solo al pasado
+            ti = np.clip(int((raw_signal[i] + 100) / 40), 0, 4)
+            vi = np.clip(int(np.std(returns[max(0, i - window):i]) * 300), 0, 2)
+            mi = np.clip(int((np.mean(returns[max(0, i - 5):i]) * 1000 + 100) / 40), 0, 4)
+            st = (ti, vi, mi)
+            
+            # Actualizar Q-Table usando el resultado de la acción AYER con el retorno de HOY
+            if prev_st is not None and prev_a is not None:
+                # La recompensa usa returns[i], no returns[i+1]
+                reward = np.clip(np.sign(opt[i-1]) * returns[i] * 100, -1, 1)
+                best_next_a = np.argmax(self.Q[st])
+                self.Q[prev_st + (prev_a,)] += self.alpha * (
+                    reward + self.gamma * self.Q[st + (best_next_a,)] - self.Q[prev_st + (prev_a,)]
+                )
+            
+            # Decisión para hoy
+            if np.random.random() < self.epsilon:
+                a = np.random.randint(5)
+            else:
+                a = np.argmax(self.Q[st])
+                
+            opt[i] = raw_signal[i] * (0.5 + 0.5 * self.mults[a])
+            
+            # Guardar estado y acción para evaluar mañana
+            prev_st = st
+            prev_a = a
+            
+            self.epsilon = max(0.01, self.epsilon * 0.999)
+            
         return opt
 
 class DeepRegimeDetector:
