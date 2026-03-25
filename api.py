@@ -22,7 +22,7 @@ app = FastAPI(title="NAU Quantum v5.4 — Sentinel Quantum Edge")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 CACHE = {}
-CACHE_TTL = 600  # 10 min — prevents signals from flickering on closed candles
+CACHE_TTL = 180
 SCAN_CACHE = {}  # Separate cache for scan results
 PREV_CLOSE_CACHE = {}
 
@@ -117,19 +117,11 @@ def compute_technicals(df):
 
 import threading
 
-# Per-symbol locks for thread safety without global serialization
-_symbol_locks = {}
-_locks_lock = threading.Lock()
-
-def _get_symbol_lock(sym):
-    with _locks_lock:
-        if sym not in _symbol_locks:
-            _symbol_locks[sym] = threading.Lock()
-        return _symbol_locks[sym]
+# yfinance is NOT thread-safe — downloads must be serialized
+_download_lock = threading.Lock()
 
 def safe_download(sym, period, interval, prepost=False):
-    lock = _get_symbol_lock(sym)
-    with lock:
+    with _download_lock:
         try:
             raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False)
         except Exception as e:
@@ -164,8 +156,7 @@ def get_prev_close(sym):
     if ck in PREV_CLOSE_CACHE and time.time() - PREV_CLOSE_CACHE[ck][1] < 3600:
         return PREV_CLOSE_CACHE[ck][0]
     try:
-        lock = _get_symbol_lock(sym)
-        with lock:
+        with _download_lock:
             t = yf.Ticker(sym)
             info = t.fast_info
             pc = float(info.get("previousClose", 0) or info.get("regularMarketPreviousClose", 0))
@@ -234,6 +225,7 @@ def download_and_compute(sym, interval, prepost=False):
     PERU_OFFSET_SEC = -5 * 3600
     
     for idx, row in df.iterrows():
+        # Convert UTC timestamp to Peru time for display (LWC v4 shows UTC)
         try: ts = int(idx.timestamp()) + PERU_OFFSET_SEC
         except: ts = int(pd.Timestamp(idx).timestamp()) + PERU_OFFSET_SEC
         bar = {"time":ts,"open":round(float(row["Open"]),4),"high":round(float(row["High"]),4),
@@ -244,8 +236,6 @@ def download_and_compute(sym, interval, prepost=False):
                 v = row.get(col)
                 if v is not None and pd.notna(v): bar[col] = round(float(v), 4)
         bars.append(bar)
-        # Send ALL signals — frontend handles display filtering
-        # This ensures signals on closed candles NEVER disappear
         if row.get("NAU_Long", False):
             signals.append({"time":ts,"type":"LONG","price":bar["close"],
                            "confidence":round(float(row["NAU_Confidence"])*100,1),
@@ -430,7 +420,7 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
         errors = 0
 
         # 4 workers — downloads are serialized for data integrity
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             future_map = {executor.submit(scan_one, si, interval, min_confidence): si for si in universe}
             for future in as_completed(future_map):
                 try:
@@ -462,15 +452,16 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
 
 # ═══ OTHER ENDPOINTS ═══
 
-
-# Feature 4: Consecutive Signal Scanner (Señal V/C)
-# Uses download_and_compute — the EXACT same function that generates chart data
-
 # Feature 4: Consecutive Signal Scanner (Señal V/C)
 def scan_vc_one(sym_info, interval):
     """
-    Fast V/C scan: download data, compute engine, check last 4 bars for signals.
-    Uses scan_fast approach for speed but checks signals like the chart.
+    Find stocks where the ONLY 2 consecutive signals are the most recent ones.
+    
+    Algorithm:
+    1. Get signals for last 20 completed candles
+    2. Scan from most recent backward to find the first pair of consecutive BUY or SELL
+    3. Check ALL candles before that pair — if ANY has the same signal type → REJECT
+    4. This ensures we catch ONLY the start of a new trend
     """
     sym = sym_info["s"]
     try:
@@ -484,7 +475,6 @@ def scan_vc_one(sym_info, interval):
         if err or df is None or df.empty or len(df) < 50:
             return None
         
-        # Resample if needed
         resample_map = {"2h":"2h","4h":"4h","6mo":"6MS","1y":"YS"}
         if interval in resample_map:
             rs = resample_map[interval]
@@ -506,72 +496,76 @@ def scan_vc_one(sym_info, interval):
         if len(df) < 50:
             return None
         
-        # Compute with thread-safe indicator
         local_ind = NAUQuantumAlphaIndicator()
         df = local_ind.compute(df)
         
-        if len(df) < 6:
+        if len(df) < 10:
             return None
         
-        # Apply gap filter EXACTLY like the chart frontend
+        # Apply the SAME signal gap filter as the chart display
         gap_map = {"1m":120,"5m":600,"15m":1800,"30m":3600,"1h":7200,
                    "2h":14400,"4h":28800,"1d":172800,"1wk":604800,"1mo":2592000}
         min_gap = gap_map.get(interval, 7200)
         
-        # Build gap-filtered signal list for ALL completed bars
-        completed = df.iloc[:-1]
-        filtered_signals = []  # (bar_index, "LONG"/"SHORT")
-        last_sig_time = 0
+        completed = df.iloc[:-1]  # Exclude current forming candle
         
-        for i, (idx_ts, row) in enumerate(completed.iterrows()):
+        # Build signal list WITH gap filter (exactly like chart markers)
+        all_signals = []
+        last_signal_time = 0
+        
+        for idx_ts, row in completed.iterrows():
             try: ts = int(idx_ts.timestamp())
             except: ts = 0
-            is_long = bool(row.get("NAU_Long", False))
-            is_short = bool(row.get("NAU_Short", False))
-            if (is_long or is_short) and (ts - last_sig_time >= min_gap):
-                filtered_signals.append((i, "LONG" if is_long else "SHORT", ts))
-                last_sig_time = ts
+            
+            has_long = bool(row.get("NAU_Long", False))
+            has_short = bool(row.get("NAU_Short", False))
+            
+            if (has_long or has_short) and (ts - last_signal_time >= min_gap):
+                all_signals.append("LONG" if has_long else "SHORT")
+                last_signal_time = ts
+            else:
+                all_signals.append("NONE")
         
-        # Need at least 2 signals total
-        if len(filtered_signals) < 2:
+        if len(all_signals) < 6:
             return None
         
-        # The last 2 filtered signals must be:
-        # 1. Same direction
-        # 2. Within the last 4 completed bars
-        # 3. No other filtered signals within 20 bars before them
+        # === NEW LOGIC: Check LAST 4 CANDLES for exactly 2 consecutive signals ===
+        last_4 = all_signals[-4:]
         
-        sig_1 = filtered_signals[-1]  # Most recent
-        sig_2 = filtered_signals[-2]  # Second most recent
+        # Find signals in the last 4 candles
+        sigs_in_4 = [(i, s) for i, s in enumerate(last_4) if s != "NONE"]
         
-        total_bars = len(completed)
-        
-        # Both must be within last 4 bars
-        if sig_1[0] < total_bars - 4 or sig_2[0] < total_bars - 4:
-            return None  # Signals too old
-        
-        # Same direction
-        if sig_1[1] != sig_2[1]:
+        # Must have exactly 2 signals in the last 4 candles
+        if len(sigs_in_4) != 2:
             return None
         
-        is_buy = sig_1[1] == "LONG"
+        # The 2 signals must be the same direction
+        if sigs_in_4[0][1] != sigs_in_4[1][1]:
+            return None
         
-        # No prior signals within 20 bars before sig_2
-        if len(filtered_signals) >= 3:
-            sig_3 = filtered_signals[-3]
-            if sig_3[0] >= total_bars - 24:  # Within 20 bars before the pair
-                return None  # Prior signal too close
+        # The 2 signals must be consecutive (adjacent or with max 1 NONE between them)
+        pos1, pos2 = sigs_in_4[0][0], sigs_in_4[1][0]
+        if pos2 - pos1 > 2:
+            return None  # Too far apart within the 4 candles
         
-        # MATCH — calculate entry/SL/TP
-        last = df.iloc[-1]
-        price = float(last["Close"])
-        atr = float(np.mean(df["High"].iloc[-14:].values.astype(float) - df["Low"].iloc[-14:].values.astype(float)))
+        is_buy = sigs_in_4[0][1] == "LONG"
         
-        sig_val = float(last["NAU_Signal"])
-        conf_val = float(last["NAU_Confidence"])
+        # === Check that NO signals exist in the 20 candles BEFORE the last 4 ===
+        prior = all_signals[:-4]
+        prior_check = prior[-20:] if len(prior) >= 20 else prior
+        for s in prior_check:
+            if s != "NONE":
+                return None  # Prior signal exists → not a new trend
+        
+        # Get the label for display
+        sig_val = float(df.iloc[-2]["NAU_Signal"])
+        conf_val = float(df.iloc[-2]["NAU_Confidence"])
         label = signal_label(sig_val, conf_val)
-        if label == "NEUTRAL":
-            label = "COMPRA" if is_buy else "VENTA"
+        
+        # MATCH: These are the FIRST 2 consecutive signals of this type = new trend start
+        current = df.iloc[-1]
+        price = float(current["Close"])
+        atr = float(np.mean(df["High"].iloc[-14:].values.astype(float) - df["Low"].iloc[-14:].values.astype(float)))
         
         if is_buy:
             entry, sl = price, round(price - 1.5*atr, 2)
@@ -589,12 +583,12 @@ def scan_vc_one(sym_info, interval):
         return {
             "symbol": sym, "name": name, "label": label,
             "direction": "LONG" if is_buy else "SHORT",
-            "consecutive": 2,
-            "price": round(price, 2),
+            "consecutive": 2, "price": round(price, 2),
             "entry": round(entry, 2), "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
         }
     except Exception:
         return None
+
 
 @app.get("/api/scan_vc")
 def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
@@ -641,7 +635,7 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
         results = []
         errors = 0
         
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             future_map = {executor.submit(scan_vc_one, si, interval): si for si in universe}
             for future in as_completed(future_map):
                 try:
@@ -804,8 +798,7 @@ def _safe_get_data(symbols, period="1mo"):
     results = {}
     for sym in symbols:
         try:
-            lock = _get_symbol_lock(sym)
-            with lock:
+            with _download_lock:
                 hist = yf.download(sym, period=period, interval="1d", progress=False, auto_adjust=True)
             if hist is not None and not hist.empty and len(hist) >= 2:
                 if isinstance(hist.columns, pd.MultiIndex):
@@ -949,8 +942,7 @@ def report_earnings_next_10days():
     earnings = []
     for sym in SP500[:80]:
         try:
-            lock = _get_symbol_lock(sym)
-            with lock:
+            with _download_lock:
                 t = yf.Ticker(sym)
                 cal = t.calendar
             if cal is not None and not cal.empty:
