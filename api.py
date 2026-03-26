@@ -522,10 +522,8 @@ def scan_bridge(sym_info, interval, min_confidence):
 
 @app.get("/api/scan")
 def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), index: str = Query("ALL")):
-    from concurrent.futures import ProcessPoolExecutor, as_completed
     try:
         universe = filter_universe(index)
-        # Limitamos el volumen máximo para evitar el colapso del Timeout de 60 segundos
         max_map = {"ALL": 150, "S&P500": 150, "NASDAQ100": 103, "DOW30": 31, "RUSSELL2000": 150, "ETF": 100}
         max_stocks = max_map.get(index, 100)
         universe = universe[:max_stocks]
@@ -533,8 +531,8 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
         t0 = time.time()
         results = []
         
-        # FIX EXTREMO: Usar multiprocesamiento real para exprimir los 8 núcleos de Hetzner al 100%
-        with ProcessPoolExecutor(max_workers=8) as executor:
+        # VOLVEMOS A HILOS SEGUROS. Adiós al "aborted without reason".
+        with ThreadPoolExecutor(max_workers=32) as executor:
             future_map = {executor.submit(scan_bridge, si, interval, min_confidence): si for si in universe}
             for future in as_completed(future_map):
                 try:
@@ -557,7 +555,6 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
 
 @app.get("/api/scan_vc")
 def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
-    from concurrent.futures import ProcessPoolExecutor, as_completed
     try:
         from stock_universe import SP500, NASDAQ_100, DOW_30, RUSSELL_2000_TOP, SP_MIDCAP_400, ADDITIONAL_STOCKS, ETFS, CRYPTO, INDICES, COMMODITIES_FOREX
         
@@ -571,8 +568,6 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
                         page_syms.append({"s": s, "idx": " · ".join(sorted(INDEX_MEMBERSHIP.get(s, {"OTHER"})))})
             return page_syms
         
-        # Reestructuramos las tandas. 500 acciones * 2 años de historial es suicidio web. 
-        # Bloques de ~150 aseguran velocidad extrema sin abortos de red.
         pages = {
             1: make_page([NASDAQ_100, DOW_30], 134),
             2: make_page([SP500], 150),
@@ -589,8 +584,8 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
         t0 = time.time()
         results = []
         
-        # 8 Núcleos Físicos trabajando al unísono
-        with ProcessPoolExecutor(max_workers=8) as executor:
+        # 32 hilos concurrentes procesando las 150 acciones rápido y sin colapsar
+        with ThreadPoolExecutor(max_workers=32) as executor:
             future_map = {executor.submit(scan_vc_one, si, interval): si for si in universe}
             for future in as_completed(future_map):
                 try:
