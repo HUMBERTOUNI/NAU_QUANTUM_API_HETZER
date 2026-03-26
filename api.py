@@ -22,7 +22,7 @@ app = FastAPI(title="NAU Quantum v5.4 — Sentinel Quantum Edge")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 CACHE = {}
-CACHE_TTL = 180
+CACHE_TTL = 900  # 15 min — signals on closed candles stay stable
 SCAN_CACHE = {}  # Separate cache for scan results
 PREV_CLOSE_CACHE = {}
 
@@ -115,13 +115,73 @@ def compute_technicals(df):
         df["MACD"] = macd.values; df["MACD_signal"] = sig.values; df["MACD_hist"] = (macd-sig).values
     return df
 
-import threading
+import threading, os, json, hashlib
 
-# yfinance is NOT thread-safe — downloads must be serialized
-_download_lock = threading.Lock()
+# Per-symbol locks — allows parallel downloads of DIFFERENT symbols (uses all 8 CPUs)
+_symbol_locks = {}
+_meta_lock = threading.Lock()
+
+def _get_lock(sym):
+    with _meta_lock:
+        if sym not in _symbol_locks:
+            _symbol_locks[sym] = threading.Lock()
+        return _symbol_locks[sym]
+
+# FIX 6: Disk cache for historical data (14 day retention)
+DISK_CACHE_DIR = "/tmp/nau_cache"
+os.makedirs(DISK_CACHE_DIR, exist_ok=True)
+
+def _disk_cache_key(sym, period, interval):
+    return hashlib.md5(f"{sym}:{period}:{interval}".encode()).hexdigest()
+
+def _disk_cache_get(sym, period, interval):
+    """Get cached DataFrame from disk. Returns None if not found or expired."""
+    try:
+        key = _disk_cache_key(sym, period, interval)
+        path = os.path.join(DISK_CACHE_DIR, f"{key}.pkl")
+        if not os.path.exists(path):
+            return None
+        age = time.time() - os.path.getmtime(path)
+        # Daily+ data: cache 1 hour. Intraday: cache 15 min
+        max_age = 3600 if interval in ("1d","1wk","1mo","3mo") else 900
+        if age > max_age:
+            return None
+        import pickle
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+    except:
+        return None
+
+def _disk_cache_set(sym, period, interval, df):
+    """Save DataFrame to disk cache."""
+    try:
+        import pickle
+        key = _disk_cache_key(sym, period, interval)
+        path = os.path.join(DISK_CACHE_DIR, f"{key}.pkl")
+        with open(path, 'wb') as f:
+            pickle.dump(df, f)
+    except:
+        pass
+
+def _cleanup_disk_cache():
+    """Remove cache files older than 14 days."""
+    try:
+        cutoff = time.time() - 14 * 86400
+        for f in os.listdir(DISK_CACHE_DIR):
+            path = os.path.join(DISK_CACHE_DIR, f)
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+    except:
+        pass
 
 def safe_download(sym, period, interval, prepost=False):
-    with _download_lock:
+    # Check disk cache first
+    cached_df = _disk_cache_get(sym, period, interval)
+    if cached_df is not None:
+        return cached_df, None
+    
+    lock = _get_lock(sym)
+    with lock:
         try:
             raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False)
         except Exception as e:
@@ -149,6 +209,7 @@ def safe_download(sym, period, interval, prepost=False):
         df[col] = pd.to_numeric(s, errors='coerce')
     df['Volume'] = df['Volume'].fillna(0)
     df = df.dropna(subset=['Open','High','Low','Close'])
+    _disk_cache_set(sym, period, interval, df)
     return df, None
 
 def get_prev_close(sym):
@@ -156,7 +217,8 @@ def get_prev_close(sym):
     if ck in PREV_CLOSE_CACHE and time.time() - PREV_CLOSE_CACHE[ck][1] < 3600:
         return PREV_CLOSE_CACHE[ck][0]
     try:
-        with _download_lock:
+        lock = _get_lock(sym)
+        with lock:
             t = yf.Ticker(sym)
             info = t.fast_info
             pc = float(info.get("previousClose", 0) or info.get("regularMarketPreviousClose", 0))
@@ -420,7 +482,7 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
         errors = 0
 
         # 4 workers — downloads are serialized for data integrity
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             future_map = {executor.submit(scan_one, si, interval, min_confidence): si for si in universe}
             for future in as_completed(future_map):
                 try:
@@ -502,10 +564,16 @@ def scan_vc_one(sym_info, interval):
         if len(df) < 10:
             return None
         
-        # Apply the SAME signal gap filter as the chart display
-        gap_map = {"1m":120,"5m":600,"15m":1800,"30m":3600,"1h":7200,
-                   "2h":14400,"4h":28800,"1d":172800,"1wk":604800,"1mo":2592000}
-        min_gap = gap_map.get(interval, 7200)
+        # Apply EXACTLY the same gap filter as the chart frontend
+        # Frontend: minGap = '1d' ? 172800 : '1wk' ? 604800 : 7200
+        if interval == '1d':
+            min_gap = 172800
+        elif interval == '1wk':
+            min_gap = 604800
+        elif interval == '1mo':
+            min_gap = 2592000
+        else:
+            min_gap = 7200  # 2 hours for ALL intraday (1m to 4h)
         
         completed = df.iloc[:-1]  # Exclude current forming candle
         
@@ -635,7 +703,7 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
         results = []
         errors = 0
         
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             future_map = {executor.submit(scan_vc_one, si, interval): si for si in universe}
             for future in as_completed(future_map):
                 try:
@@ -798,7 +866,8 @@ def _safe_get_data(symbols, period="1mo"):
     results = {}
     for sym in symbols:
         try:
-            with _download_lock:
+            lock = _get_lock(sym)
+            with lock:
                 hist = yf.download(sym, period=period, interval="1d", progress=False, auto_adjust=True)
             if hist is not None and not hist.empty and len(hist) >= 2:
                 if isinstance(hist.columns, pd.MultiIndex):
@@ -942,7 +1011,8 @@ def report_earnings_next_10days():
     earnings = []
     for sym in SP500[:80]:
         try:
-            with _download_lock:
+            lock = _get_lock(sym)
+            with lock:
                 t = yf.Ticker(sym)
                 cal = t.calendar
             if cal is not None and not cal.empty:
@@ -1360,5 +1430,6 @@ if os.path.exists("/app/static"):
     app.mount("/static", StaticFiles(directory="/app/static"), name="static")
 
 if __name__ == "__main__":
+    _cleanup_disk_cache()
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=9000, workers=8)
