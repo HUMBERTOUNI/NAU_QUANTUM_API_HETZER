@@ -164,25 +164,20 @@ def safe_download(sym, period, interval, prepost=False):
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 2. DESCARGA DE REPORTES CORREGIDA (1D)
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# 1. FIX REPORTES: Reutilizar safe_download para evitar el error 2D (ndarray)
 def _safe_get_data(symbols, period="1mo"):
     results = {}
     def fetch(sym):
-        try:
-            t = yf.Ticker(sym)
-            hist = t.history(period=period, interval="1d")
-            if hist is not None and not hist.empty and len(hist) >= 2:
-                if isinstance(hist.columns, pd.MultiIndex):
-                    hist.columns = hist.columns.get_level_values(0)
-                hist = hist.loc[:, ~hist.columns.duplicated(keep='first')]
-                
-                # FIX: Forzar Cierre a 1D para la IA
-                if isinstance(hist.get('Close'), pd.DataFrame):
-                    hist['Close'] = hist['Close'].iloc[:, 0]
-                return sym, hist
-        except: pass
+        # Usamos safe_download que ya tiene el blindaje 1D incorporado
+        df, err = safe_download(sym, period, "1d", False)
+        if df is not None and not df.empty and len(df) >= 2:
+            return sym, df
         return sym, None
         
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # 10 Hilos es el límite seguro para no ser baneado por Yahoo
+    with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_sym = {executor.submit(fetch, sym): sym for sym in symbols}
         for future in as_completed(future_to_sym):
             sym, hist = future.result()
@@ -327,15 +322,13 @@ def download_and_compute(sym, interval, prepost=False):
 # ══════════════════════════════════════════════════════════════
 
 def scan_fast(sym, interval):
-    """Thread-safe scan: creates own indicator instance, downloads SHORT period."""
+    """Thread-safe scan: creates own indicator instance, downloads EXACT SAME period as chart."""
     try:
-        yf_interval_map = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h",
-                           "2h":"1h","4h":"1h","1d":"1d","1wk":"1wk","1mo":"1mo",
-                           "3mo":"3mo","6mo":"1mo","1y":"3mo"}
-        yf_interval = yf_interval_map.get(interval, "1d")
-        scan_period = SCAN_PERIOD_MAP.get(interval, "1y")
+        # FIX: Obligamos al escáner a usar el mismo periodo de historial que la gráfica
+        config = INTERVAL_MAP.get(interval, INTERVAL_MAP["1d"])
+        yf_interval = config["yf"]
+        scan_period = config["period"]
 
-        # FIX: prepost=True para alinear con el gráfico visual
         df, err = safe_download(sym, scan_period, yf_interval, True)
         if err or df is None or df.empty:
             return None
@@ -397,16 +390,15 @@ def scan_fast(sym, interval):
         return None
 
 # Feature 4: Consecutive Signal Scanner (Señal V/C)
+# Feature 4: Consecutive Signal Scanner (Señal V/C)
 def scan_vc_one(sym_info, interval):
     sym = sym_info["s"]
     try:
-        yf_interval_map = {"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h",
-                           "2h":"1h","4h":"1h","1d":"1d","1wk":"1wk","1mo":"1mo",
-                           "3mo":"3mo","6mo":"1mo","1y":"3mo"}
-        yf_int = yf_interval_map.get(interval, "1d")
-        scan_period = SCAN_PERIOD_MAP.get(interval, "1y")
+        # FIX: Alineación estricta de historial con la gráfica
+        config = INTERVAL_MAP.get(interval, INTERVAL_MAP["1d"])
+        yf_int = config["yf"]
+        scan_period = config["period"]
         
-        # FIX: prepost=True para alinear con el gráfico visual
         df, err = safe_download(sym, scan_period, yf_int, True)
         if err or df is None or df.empty or len(df) < 50:
             return None
@@ -440,7 +432,6 @@ def scan_vc_one(sym_info, interval):
         
         completed = df.iloc[:-1]  # Solo velas cerradas
         
-        # FIX CRÍTICO: Alineación MILIMÉTRICA de tiempos y GAPs con el frontend
         min_gap = 172800 if interval == "1d" else (604800 if interval == "1wk" else 7200)
         PERU_OFFSET_SEC = -5 * 3600
         
@@ -547,8 +538,8 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
         t0 = time.time()
         results = []
         
-        # FIX: Subido a 32 Hilos para que Hetzner destruya las búsquedas en segundos y no aborte
-        with ThreadPoolExecutor(max_workers=32) as executor:
+        # FIX: Reducido a 10 Hilos. Evita el bloqueo de Yahoo y el "aborted without reason"
+        with ThreadPoolExecutor(max_workers=10) as executor:
             future_map = {executor.submit(scan_bridge, si, interval, min_confidence): si for si in universe}
             for future in as_completed(future_map):
                 try:
@@ -568,6 +559,7 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
         }
     except Exception as e:
         return {"error": str(e)}
+
 
 @app.get("/api/scan_vc")
 def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
@@ -600,8 +592,8 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
         t0 = time.time()
         results = []
         
-        # FIX: Subido a 32 Hilos para que Hetzner aproveche todo el procesador
-        with ThreadPoolExecutor(max_workers=32) as executor:
+        # FIX: Reducido a 10 Hilos. Flujo constante y seguro sin colgar el frontend.
+        with ThreadPoolExecutor(max_workers=10) as executor:
             future_map = {executor.submit(scan_vc_one, si, interval): si for si in universe}
             for future in as_completed(future_map):
                 try:
@@ -625,7 +617,6 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
     except Exception as e:
         return {"results": [], "total_scanned": 0, "scan_time": 0, "error": str(e),
                 "page": page, "total_pages": 0}
-
 
 @app.get("/api/report")
 def generate_report(section: str = Query("all"), interval: str = Query("1d")):
