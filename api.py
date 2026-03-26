@@ -22,9 +22,34 @@ app = FastAPI(title="NAU Quantum v5.4 — Sentinel Quantum Edge")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 CACHE = {}
-CACHE_TTL = 180
-SCAN_CACHE = {}  
+CACHE_TTL = 300  # 5 min caché — CX43 tiene RAM suficiente para guardar más tiempo
+SCAN_CACHE = {}
 PREV_CLOSE_CACHE = {}
+
+# ═══ SIGNAL LOCK CACHE ═══
+# Señales de velas CERRADAS nunca se modifican una vez calculadas.
+# Clave: "SYM:interval:timestamp_utc" → {"type","confidence","signal_score","label"}
+SIGNAL_LOCK_CACHE = {}
+SIGNAL_LOCK_FILE = "signal_lock_cache.pkl"
+_signal_lock_mutex = threading.Lock()
+
+def _load_signal_lock():
+    global SIGNAL_LOCK_CACHE
+    try:
+        if os.path.exists(SIGNAL_LOCK_FILE):
+            with open(SIGNAL_LOCK_FILE, "rb") as f:
+                SIGNAL_LOCK_CACHE = pickle.load(f)
+    except:
+        SIGNAL_LOCK_CACHE = {}
+
+def _save_signal_lock():
+    try:
+        with open(SIGNAL_LOCK_FILE, "wb") as f:
+            pickle.dump(SIGNAL_LOCK_CACHE, f)
+    except:
+        pass
+
+_load_signal_lock()
 
 def cache_get(key):
     if key in CACHE and time.time() - CACHE[key][1] < CACHE_TTL:
@@ -325,8 +350,14 @@ def download_and_compute(sym, interval, prepost=False):
                ["VWAP","EMA_9","EMA_21","EMA_50","EMA_200","SMA_20","BB_upper","BB_lower",
                 "RSI","MACD","MACD_signal","MACD_hist"]
     PERU_OFFSET_SEC = -5 * 3600
-    
-    for idx, row in df.iterrows():
+
+    # Determinar cuál es la última vela (puede estar incompleta)
+    all_timestamps = list(df.index)
+    last_closed_idx = len(all_timestamps) - 2  # penúltima = última cerrada con certeza
+
+    new_locks = {}
+
+    for i, (idx, row) in enumerate(df.iterrows()):
         try: ts = int(idx.timestamp()) + PERU_OFFSET_SEC
         except: ts = int(pd.Timestamp(idx).timestamp()) + PERU_OFFSET_SEC
         bar = {"time":ts,"open":round(float(row["Open"]),4),"high":round(float(row["High"]),4),
@@ -337,16 +368,44 @@ def download_and_compute(sym, interval, prepost=False):
                 v = row.get(col)
                 if v is not None and pd.notna(v): bar[col] = round(float(v), 4)
         bars.append(bar)
-        if row.get("NAU_Long", False):
-            signals.append({"time":ts,"type":"LONG","price":bar["close"],
-                           "confidence":round(float(row["NAU_Confidence"])*100,1),
-                           "signal_score":round(float(row["NAU_Signal"]),1),
-                           "label":signal_label(row["NAU_Signal"], row["NAU_Confidence"])})
-        if row.get("NAU_Short", False):
-            signals.append({"time":ts,"type":"SHORT","price":bar["close"],
-                           "confidence":round(float(row["NAU_Confidence"])*100,1),
-                           "signal_score":round(float(row["NAU_Signal"]),1),
-                           "label":signal_label(row["NAU_Signal"], row["NAU_Confidence"])})
+
+        # ═══ SIGNAL LOCK LOGIC ═══
+        # Para velas cerradas: primero consultar el lock cache.
+        # Si ya hay una señal bloqueada, usarla. Si el engine genera nueva señal, guardarla.
+        # La última vela (posiblemente abierta) NO se bloquea.
+        is_closed = (i <= last_closed_idx)
+        lock_key = f"{sym}:{interval}:{ts}"
+
+        if is_closed and lock_key in SIGNAL_LOCK_CACHE:
+            # Señal ya bloqueada — usar la original, ignorar recálculo del engine
+            locked = SIGNAL_LOCK_CACHE[lock_key]
+            signals.append({**locked, "time": ts})
+        else:
+            has_long = bool(row.get("NAU_Long", False))
+            has_short = bool(row.get("NAU_Short", False))
+            sig_entry = None
+            if has_long:
+                sig_entry = {"time":ts,"type":"LONG","price":bar["close"],
+                             "confidence":round(float(row["NAU_Confidence"])*100,1),
+                             "signal_score":round(float(row["NAU_Signal"]),1),
+                             "label":signal_label(row["NAU_Signal"], row["NAU_Confidence"])}
+            elif has_short:
+                sig_entry = {"time":ts,"type":"SHORT","price":bar["close"],
+                             "confidence":round(float(row["NAU_Confidence"])*100,1),
+                             "signal_score":round(float(row["NAU_Signal"]),1),
+                             "label":signal_label(row["NAU_Signal"], row["NAU_Confidence"])}
+
+            if sig_entry:
+                signals.append(sig_entry)
+                if is_closed:
+                    # Bloquear esta señal para que nunca desaparezca
+                    new_locks[lock_key] = sig_entry
+
+    # Persistir nuevas señales bloqueadas
+    if new_locks:
+        with _signal_lock_mutex:
+            SIGNAL_LOCK_CACHE.update(new_locks)
+            _save_signal_lock()
 
     last = df.iloc[-1]
     sig_val = float(last["NAU_Signal"])
@@ -455,9 +514,11 @@ def scan_fast(sym, interval):
 
 def scan_vc_one(sym_info, interval):
     """
-    Busca acciones con 2+ señales consecutivas del mismo tipo (LONG/SHORT)
-    en las últimas velas CERRADAS.
-    Lógica corregida: sin prior-check excesivo, conteo real de consecutivos.
+    Busca acciones con 2+ señales consecutivas del MISMO tipo (LONG/SHORT)
+    en las últimas velas CERRADAS y confirmadas.
+    - Solo cuenta velas donde NAU_Long o NAU_Short = True (señal real generada por el engine)
+    - Excluye la vela más reciente (puede estar incompleta)
+    - Cuenta racha real hacia atrás
     """
     sym = sym_info["s"]
     try:
@@ -489,7 +550,6 @@ def scan_vc_one(sym_info, interval):
 
         if len(df) > 260:
             df = df.iloc[-260:].copy()
-
         if len(df) < 50:
             return None
 
@@ -499,14 +559,12 @@ def scan_vc_one(sym_info, interval):
         if len(df) < 10:
             return None
 
-        # Usar todas las velas cerradas (excluir la última, que puede estar incompleta)
+        # Usar SOLO velas cerradas (excluir la última que puede estar incompleta)
         completed = df.iloc[:-1]
-
-        if len(completed) < 6:
+        if len(completed) < 4:
             return None
 
-        # Construir lista simple de señales por vela (sin restricción de gap temporal)
-        # NAU_Long y NAU_Short ya son booleanos calculados por el engine
+        # Construir lista de señales por vela
         raw_signals = []
         for _, row in completed.iterrows():
             has_long = bool(row.get("NAU_Long", False))
@@ -518,14 +576,12 @@ def scan_vc_one(sym_info, interval):
             else:
                 raw_signals.append("NONE")
 
-        # Contar racha consecutiva al final de la lista
-        if not raw_signals:
-            return None
-
+        # La última señal del listado debe ser LONG o SHORT (no NONE)
         last_sig = raw_signals[-1]
         if last_sig == "NONE":
             return None
 
+        # Contar racha consecutiva hacia atrás
         consecutive = 0
         for s in reversed(raw_signals):
             if s == last_sig:
@@ -533,24 +589,28 @@ def scan_vc_one(sym_info, interval):
             else:
                 break
 
-        # Solo retornar si hay 2 o más consecutivos
+        # Mínimo 2 señales consecutivas del mismo tipo
         if consecutive < 2:
             return None
 
         is_buy = (last_sig == "LONG")
 
-        sig_val = float(completed.iloc[-1]["NAU_Signal"])
-        conf_val = float(completed.iloc[-1]["NAU_Confidence"])
+        # Usar datos de la última vela cerrada para métricas
+        last_closed = completed.iloc[-1]
+        sig_val = float(last_closed.get("NAU_Signal", 0))
+        conf_val = float(last_closed.get("NAU_Confidence", 0))
         label = signal_label(sig_val, conf_val)
 
+        # Precio actual (última vela, puede estar abierta)
         current = df.iloc[-1]
         price = float(current["Close"])
-        atr = float(np.mean(
-            df["High"].iloc[-14:].values.astype(float) -
-            df["Low"].iloc[-14:].values.astype(float)
-        ))
-        if atr <= 0:
-            atr = price * 0.01  # fallback 1% ATR
+
+        # ATR real sobre últimas 14 velas
+        highs = df["High"].iloc[-14:].values.astype(float)
+        lows  = df["Low"].iloc[-14:].values.astype(float)
+        atr = float(np.mean(highs - lows))
+        if atr <= 0 or np.isnan(atr):
+            atr = price * 0.015
 
         if is_buy:
             entry = price
@@ -626,7 +686,7 @@ def scan_stocks(interval: str = Query("1d"), min_confidence: float = Query(55), 
         bulk_warmup(sym_list, config["period"], config["yf"], True)
         
         results = []
-        with ThreadPoolExecutor(max_workers=32) as executor:
+        with ThreadPoolExecutor(max_workers=48) as executor:
             future_map = {executor.submit(scan_bridge, si, interval, min_confidence): si for si in universe}
             for future in as_completed(future_map):
                 try:
@@ -683,7 +743,7 @@ def scan_vc(interval: str = Query("1d"), page: int = Query(1)):
         bulk_warmup(sym_list, config["period"], config["yf"], True)
         
         results = []
-        with ThreadPoolExecutor(max_workers=32) as executor:
+        with ThreadPoolExecutor(max_workers=48) as executor:
             future_map = {executor.submit(scan_vc_one, si, interval): si for si in universe}
             for future in as_completed(future_map):
                 try:
@@ -925,163 +985,313 @@ def report_earnings_next_10days():
     return """<div class="rpt-section"><h2>📅 3. Earnings Próximos 10 Días</h2>
 <p class="rpt-narrative">Desactivado temporalmente para optimizar velocidad del servidor.</p></div>"""
 
+def _advanced_analysis(sym, hist):
+    """
+    Análisis avanzado con Python + estadística: regresión, Hurst, detección de patrones,
+    soporte/resistencia dinámico, divergencias, predicción de tendencia.
+    """
+    c = hist["Close"].values.astype(float)
+    h = hist["High"].values.astype(float)
+    l = hist["Low"].values.astype(float)
+    v = hist["Volume"].values.astype(float)
+    n = len(c)
+    price = c[-1]
+
+    # ── 1. Regresión lineal para tendencia estadística ──
+    x = np.arange(n)
+    slope, intercept = np.polyfit(x[-20:], c[-20:], 1)
+    slope_pct = (slope / (np.mean(c[-20:]) + 1e-10)) * 100
+    r2 = np.corrcoef(x[-20:], c[-20:])[0,1]**2
+
+    # ── 2. Exponente de Hurst (tendencia vs reversión) ──
+    def hurst_exp(ts):
+        lags = range(2, min(20, len(ts)//2))
+        tau = [np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags]
+        if len(tau) < 3 or min(tau) <= 0: return 0.5
+        try:
+            reg = np.polyfit(np.log(list(lags)), np.log(tau), 1)
+            return float(reg[0])
+        except: return 0.5
+    hurst = hurst_exp(c[-60:]) if n >= 60 else 0.5
+
+    # ── 3. Volatilidad estadística (anualizada) ──
+    returns = np.diff(np.log(c[-30:] + 1e-10)) if n >= 30 else np.diff(np.log(c + 1e-10))
+    vol_ann = float(np.std(returns) * np.sqrt(252) * 100)
+
+    # ── 4. Soporte y resistencia dinámicos (pivotes locales) ──
+    def find_pivots(highs, lows, window=5):
+        supports, resistances = [], []
+        for i in range(window, len(highs) - window):
+            if lows[i] == min(lows[i-window:i+window+1]):
+                supports.append(lows[i])
+            if highs[i] == max(highs[i-window:i+window+1]):
+                resistances.append(highs[i])
+        return sorted(set(round(x, 2) for x in supports))[-3:], \
+               sorted(set(round(x, 2) for x in resistances))[:3]
+
+    supports, resistances = find_pivots(h, l)
+    nearest_sup = max((s for s in supports if s < price), default=None)
+    nearest_res = min((r for r in resistances if r > price), default=None)
+
+    # ── 5. Divergencia volumen-precio ──
+    pct_5d = ((c[-1] - c[-5]) / c[-5] * 100) if n >= 5 else 0
+    vol_5d_avg = np.mean(v[-5:]) if n >= 5 else np.mean(v)
+    vol_20d_avg = np.mean(v[-20:]) if n >= 20 else np.mean(v)
+    vol_ratio = vol_5d_avg / max(vol_20d_avg, 1)
+
+    div_text = ""
+    if pct_5d > 1 and vol_ratio < 0.7:
+        div_text = "⚠️ Divergencia bajista: precio sube con volumen bajo (señal débil)"
+    elif pct_5d < -1 and vol_ratio < 0.7:
+        div_text = "⚠️ Divergencia alcista: precio cae con volumen bajo (posible agotamiento bajista)"
+    elif pct_5d > 1 and vol_ratio > 1.3:
+        div_text = "✅ Confirmación alcista: precio sube con volumen alto"
+    elif pct_5d < -1 and vol_ratio > 1.3:
+        div_text = "❌ Confirmación bajista: precio cae con volumen alto"
+
+    # ── 6. Formaciones chartistas (Doble techo/suelo) ──
+    pattern_text = ""
+    if n >= 30:
+        recent_highs = [h[i] for i in range(n-20, n) if h[i] == max(h[max(0,i-3):i+4])]
+        recent_lows  = [l[i] for i in range(n-20, n) if l[i] == min(l[max(0,i-3):i+4])]
+        if len(recent_highs) >= 2 and abs(recent_highs[-1] - recent_highs[-2]) / recent_highs[-2] < 0.02:
+            pattern_text = "📊 Patrón: Doble techo detectado → posible reversión bajista"
+        elif len(recent_lows) >= 2 and abs(recent_lows[-1] - recent_lows[-2]) / recent_lows[-2] < 0.02:
+            pattern_text = "📊 Patrón: Doble suelo detectado → posible reversión alcista"
+
+    # ── 7. Predicción de tendencia 4 días (regresión + Hurst) ──
+    proj_price = price + slope * 4
+    proj_pct = ((proj_price - price) / price) * 100
+    if hurst > 0.6 and slope > 0:
+        pred = f"📈 SUBIRÁ ~{proj_pct:+.1f}% (Hurst={hurst:.2f} indica tendencia persistente, R²={r2:.2f})"
+    elif hurst > 0.6 and slope < 0:
+        pred = f"📉 BAJARÁ ~{proj_pct:+.1f}% (Hurst={hurst:.2f} indica tendencia persistente, R²={r2:.2f})"
+    elif hurst < 0.4:
+        pred = f"↔️ REVERSIÓN PROBABLE (Hurst={hurst:.2f} indica mercado mean-reverting)"
+    else:
+        pred = f"⚖️ INDECISIÓN (Hurst={hurst:.2f} aleatorio, tendencia lineal: {proj_pct:+.1f}%)"
+
+    parts = [pred]
+    if nearest_sup: parts.append(f"Soporte clave: ${nearest_sup}")
+    if nearest_res: parts.append(f"Resistencia clave: ${nearest_res}")
+    if div_text: parts.append(div_text)
+    if pattern_text: parts.append(pattern_text)
+    parts.append(f"Volatilidad anualizada: {vol_ann:.1f}% | Vol. relativo: {vol_ratio:.1f}x")
+
+    return " | ".join(parts)
+
+
 def report_likely_up_this_week():
-    data = _safe_get_data(SP500[:120], "3mo")
+    data = _safe_get_data(SP500[:150], "3mo")
     bullish = []
     for sym, hist in data.items():
         c = hist["Close"].values.astype(float)
+        h = hist["High"].values.astype(float)
+        l = hist["Low"].values.astype(float)
+        v = hist["Volume"].values.astype(float)
         if len(c) < 50: continue
         price = c[-1]
         emas = _calc_emas(c)
         rsi = _calc_rsi(c)
         pct_5d = ((c[-1]-c[-5])/c[-5])*100 if len(c)>=5 else 0
-        
-        if price > emas["ema9"] > emas["ema21"] and 40 < rsi < 68:
-            reason = f"Alineación alcista. Momentum: {pct_5d:+.1f}%"
-            bullish.append({"sym":sym,"price":price,"rsi":rsi,"pct_5d":pct_5d,"reason":reason})
-    
-    bullish.sort(key=lambda x: x["pct_5d"], reverse=True)
-    rows = "".join(f"""<tr><td><b>{p["sym"]}</b></td><td>{_get_name(p["sym"])}</td><td>${p["price"]:.2f}</td>
-        <td>{_rsi_text(p["rsi"])}</td><td class="up">{p["pct_5d"]:+.2f}%</td>
-        <td style="font-size:11px">{p["reason"]}</td></tr>""" for p in bullish[:15])
-    
-    return f"""<div class="rpt-section"><h2>🟢 4. Acciones que Pueden SUBIR Esta Semana</h2>
-<table class="rpt-table"><thead><tr><th>Ticker</th><th>Nombre</th><th>Precio</th><th>RSI</th><th>Var. 5d</th><th>Análisis</th></tr></thead><tbody>{rows}</tbody></table></div>"""
+
+        # Regresión + Hurst para filtrar solo tendencias reales
+        x = np.arange(min(20, len(c)))
+        slope, _ = np.polyfit(x, c[-len(x):], 1)
+        slope_pct = (slope / (np.mean(c[-20:]) + 1e-10)) * 100
+
+        vol_ratio = np.mean(v[-5:]) / max(np.mean(v[-20:]), 1)
+
+        # Criterio estricto: alineación EMA + RSI sano + pendiente positiva + volumen
+        if (price > emas["ema9"] > emas["ema21"] and
+                40 < rsi < 68 and
+                slope_pct > 0.05 and
+                vol_ratio > 0.8):
+            analysis = _advanced_analysis(sym, hist)
+            bullish.append({"sym":sym,"price":price,"rsi":rsi,"pct_5d":pct_5d,
+                            "slope_pct":slope_pct,"vol_ratio":vol_ratio,"analysis":analysis})
+
+    bullish.sort(key=lambda x: x["slope_pct"], reverse=True)
+    rows = "".join(f"""<tr><td><b>{p["sym"]}</b></td><td>{_get_name(p["sym"])}</td>
+        <td>${p["price"]:.2f}</td><td>{_rsi_text(p["rsi"])}</td>
+        <td class="up">{p["pct_5d"]:+.2f}%</td>
+        <td style="font-size:10px;max-width:300px">{p["analysis"]}</td></tr>""" for p in bullish[:15])
+
+    return f"""<div class="rpt-section"><h2>🟢 4. Acciones que Pueden SUBIR Esta Semana — Análisis IA + Estadística</h2>
+<table class="rpt-table"><thead><tr><th>Ticker</th><th>Nombre</th><th>Precio</th><th>RSI</th><th>Var. 5d</th><th>Análisis Avanzado</th></tr></thead><tbody>{rows}</tbody></table></div>"""
+
 
 def report_likely_down_this_week():
-    data = _safe_get_data(SP500[:120], "3mo")
+    data = _safe_get_data(SP500[:150], "3mo")
     bearish = []
     for sym, hist in data.items():
         c = hist["Close"].values.astype(float)
+        v = hist["Volume"].values.astype(float)
         if len(c) < 50: continue
         price = c[-1]
         emas = _calc_emas(c)
         rsi = _calc_rsi(c)
         pct_5d = ((c[-1]-c[-5])/c[-5])*100 if len(c)>=5 else 0
-        
-        if price < emas["ema9"] < emas["ema21"] and rsi < 48:
-            reason = f"Alineación bajista. Caída reciente: {pct_5d:.1f}%"
-            bearish.append({"sym":sym,"price":price,"rsi":rsi,"pct_5d":pct_5d,"reason":reason})
-    
-    bearish.sort(key=lambda x: x["pct_5d"])
-    rows = "".join(f"""<tr><td><b>{p["sym"]}</b></td><td>{_get_name(p["sym"])}</td><td>${p["price"]:.2f}</td>
-        <td>{_rsi_text(p["rsi"])}</td><td class="down">{p["pct_5d"]:+.2f}%</td>
-        <td style="font-size:11px">{p["reason"]}</td></tr>""" for p in bearish[:15])
-    
-    return f"""<div class="rpt-section"><h2>🔴 5. Acciones que Pueden BAJAR Esta Semana</h2>
-<table class="rpt-table"><thead><tr><th>Ticker</th><th>Nombre</th><th>Precio</th><th>RSI</th><th>Var. 5d</th><th>Análisis</th></tr></thead><tbody>{rows}</tbody></table></div>"""
+
+        x = np.arange(min(20, len(c)))
+        slope, _ = np.polyfit(x, c[-len(x):], 1)
+        slope_pct = (slope / (np.mean(c[-20:]) + 1e-10)) * 100
+        vol_ratio = np.mean(v[-5:]) / max(np.mean(v[-20:]), 1)
+
+        if (price < emas["ema9"] < emas["ema21"] and
+                rsi < 50 and
+                slope_pct < -0.05):
+            analysis = _advanced_analysis(sym, hist)
+            bearish.append({"sym":sym,"price":price,"rsi":rsi,"pct_5d":pct_5d,
+                            "slope_pct":slope_pct,"vol_ratio":vol_ratio,"analysis":analysis})
+
+    bearish.sort(key=lambda x: x["slope_pct"])
+    rows = "".join(f"""<tr><td><b>{p["sym"]}</b></td><td>{_get_name(p["sym"])}</td>
+        <td>${p["price"]:.2f}</td><td>{_rsi_text(p["rsi"])}</td>
+        <td class="down">{p["pct_5d"]:+.2f}%</td>
+        <td style="font-size:10px;max-width:300px">{p["analysis"]}</td></tr>""" for p in bearish[:15])
+
+    return f"""<div class="rpt-section"><h2>🔴 5. Acciones que Pueden BAJAR Esta Semana — Análisis IA + Estadística</h2>
+<table class="rpt-table"><thead><tr><th>Ticker</th><th>Nombre</th><th>Precio</th><th>RSI</th><th>Var. 5d</th><th>Análisis Avanzado</th></tr></thead><tbody>{rows}</tbody></table></div>"""
+
 
 def report_4day_outlook():
     indices = {"^GSPC":"S&P 500","^DJI":"Dow Jones","^IXIC":"NASDAQ","^RUT":"Russell 2000"}
     data = _safe_get_data(list(indices.keys()), "6mo")
-    
+
     from nau_quantum_engine import NAUQuantumAlphaIndicator
     local_ind = NAUQuantumAlphaIndicator()
-    
+
     rows = ""
     for sym, name in indices.items():
         if sym not in data: continue
         hist = data[sym]
         if len(hist) < 50: continue
-            
+
         try:
             df_ia = local_ind.compute(hist.copy())
             last_ia = df_ia.iloc[-1]
         except: continue
-            
+
         c = hist["Close"].values.astype(float)
         price = c[-1]
         pct_5d = ((c[-1]-c[-5])/c[-5])*100 if len(c)>=5 else 0
-        
+
         sig = float(last_ia.get("NAU_Signal", 0))
         conf = float(last_ia.get("NAU_Confidence", 0)) * 100
-        hmm_state = int(last_ia.get("NAU_Regime", 2))
-        hurst = float(last_ia.get("NAU_Hurst_Score", 0))
-        
+        hurst_score = float(last_ia.get("NAU_Hurst_Score", 0))
+
+        # Análisis estadístico avanzado
+        adv = _advanced_analysis(sym, hist)
+
         if sig > 15 and conf > 50:
             pred_dir = "📈 SUBIRÁ (Próximos 4 días)"
-            sustento = f"Score IA: {sig:+.1f}. Régimen BULL. Exponente Hurst {hurst:+.1f} indica tendencia firme."
         elif sig < -15 and conf > 50:
             pred_dir = "📉 BAJARÁ (Próximos 4 días)"
-            sustento = f"Score IA: {sig:+.1f}. Presión vendedora detectada y régimen BEAR."
         else:
             pred_dir = "⚖️ LATERAL / INDECISIÓN"
-            sustento = f"Score: {sig:+.1f}, Confianza: {conf:.0f}%. Las redes neuronales no detectan flujo claro."
 
         rows += f"""<tr><td><b>{sym}</b></td><td>{name}</td><td>${price:,.2f}</td>
         <td class="{"up" if pct_5d>0 else "down"}">{pct_5d:+.2f}%</td>
-        <td><b>{pred_dir}</b></td><td style="font-size:11px">{sustento}</td></tr>"""
-    
+        <td><b>{pred_dir}</b></td>
+        <td style="font-size:10px;max-width:280px">{adv}</td></tr>"""
+
     return f"""<div class="rpt-section">
-<h2>🔮 6. Predicción con IA — Perspectiva Próximos 4 Días</h2>
-<table class="rpt-table"><thead><tr><th>Índice</th><th>Nombre</th><th>Precio</th><th>Var. 5d</th><th>Predicción IA</th><th>Sustento</th></tr></thead><tbody>{rows}</tbody></table></div>"""
+<h2>🔮 6. Predicción con IA + Estadística — Perspectiva Próximos 4 Días</h2>
+<table class="rpt-table"><thead><tr><th>Índice</th><th>Nombre</th><th>Precio</th><th>Var. 5d</th><th>Predicción IA</th><th>Sustento Estadístico</th></tr></thead><tbody>{rows}</tbody></table></div>"""
 
-def report_sector_news():
-    sectors = {"XLK":"Tecnología","XLF":"Financieros","XLE":"Energía","XLV":"Salud"}
-    data = _safe_get_data(list(sectors.keys()), "1mo")
-    rows = ""
-    for etf, name in sectors.items():
-        if etf not in data: continue
-        c = data[etf]["Close"].values.astype(float)
-        price = c[-1]
-        pct_1w = ((c[-1]-c[-5])/c[-5])*100 if len(c)>=5 else 0
-        rows += f"""<tr><td>{etf}</td><td><b>{name}</b></td><td>${price:.2f}</td><td class="{"up" if pct_1w>0 else "down"}">{pct_1w:+.2f}%</td></tr>"""
-    return f"""<div class="rpt-section"><h2>📰 7. Análisis por Sector (Principal)</h2>
-<table class="rpt-table"><thead><tr><th>ETF</th><th>Sector</th><th>Precio</th><th>Var. 1 sem</th></tr></thead><tbody>{rows}</tbody></table></div>"""
-
-def report_market_today():
-    return """<div class="rpt-section"><h2>🏛️ 8. Comportamiento del Mercado Hoy</h2><p>Ver gráfico en vivo.</p></div>"""
-
-def report_ai_tech_news():
-    return """<div class="rpt-section"><h2>🤖 9. Sector AI / Tecnología</h2><p>Ver escáner de mercado.</p></div>"""
-
-def report_ema200_stocks(interval="1d"):
-    data = _safe_get_data(SP500[:50], "1y")
-    rows = ""
-    for sym, hist in data.items():
-        c = hist["Close"].values.astype(float)
-        if len(c) < 200: continue
-        ema200 = pd.Series(c).ewm(span=200).mean().iloc[-1]
-        price = c[-1]; dist = ((price-ema200)/ema200)*100
-        if abs(dist) < 3:
-            rows += f"""<tr><td><b>{sym}</b></td><td>${price:.2f}</td><td>${ema200:.2f}</td><td class="{"up" if dist>0 else "down"}">{dist:+.2f}%</td></tr>"""
-    return f"""<div class="rpt-section"><h2>📏 10. Acciones Cerca del EMA 200</h2>
-<table class="rpt-table"><thead><tr><th>Ticker</th><th>Precio</th><th>EMA 200</th><th>Distancia</th></tr></thead><tbody>{rows}</tbody></table></div>"""
 
 def report_fibonacci_fallen(interval="1d"):
-    candidates = list(dict.fromkeys(SP500[:50]))
+    candidates = list(dict.fromkeys(SP500[:80]))
     data = _safe_get_data(candidates, "6mo")
-    
+
     from nau_quantum_engine import NAUQuantumAlphaIndicator
     local_ind = NAUQuantumAlphaIndicator()
-    
+
     fallen = []
     for sym, hist in data.items():
         if len(hist) < 60: continue
-            
+
         c = hist["Close"].values.astype(float)
-        high = float(np.max(c)); low = float(np.min(c))
-        price = c[-1]; drop = ((price-high)/high)*100
-        fib_618 = high - (high-low)*0.618
-        
-        if drop < -15:
+        h = hist["High"].values.astype(float)
+        l = hist["Low"].values.astype(float)
+        high = float(np.max(c[-120:] if len(c)>=120 else c))
+        low  = float(np.min(c[-120:] if len(c)>=120 else c))
+        price = c[-1]
+        drop = ((price - high) / high) * 100
+
+        if drop < -12:
+            diff = high - low
+            fib_levels = {
+                "23.6%": round(high - diff*0.236, 2),
+                "38.2%": round(high - diff*0.382, 2),
+                "50.0%": round(high - diff*0.500, 2),
+                "61.8%": round(high - diff*0.618, 2),
+                "78.6%": round(high - diff*0.786, 2),
+            }
+            # Nivel Fibonacci más cercano al precio actual
+            nearest_fib = min(fib_levels.items(), key=lambda x: abs(x[1] - price))
+            dist_fib = ((price - nearest_fib[1]) / nearest_fib[1]) * 100
+
             try:
                 df_ia = local_ind.compute(hist.copy())
                 last_ia = df_ia.iloc[-1]
-            except: continue
-                
-            sig = float(last_ia.get("NAU_Signal", 0))
-            if sig > 15: pred = "🟢 REBOTE (Soporte Institucional)"
-            elif sig < -15: pred = "🔴 CONTINUACIÓN BAJISTA"
-            else: pred = "🟡 INDECISIÓN"
-            
-            fallen.append({"sym":sym,"price":price,"drop":drop,"fib":fib_618,"pred":pred})
-    
+                sig = float(last_ia.get("NAU_Signal", 0))
+                conf = float(last_ia.get("NAU_Confidence", 0)) * 100
+            except:
+                sig, conf = 0, 0
+
+            # Análisis estadístico avanzado
+            x = np.arange(min(10, len(c)))
+            slope, _ = np.polyfit(x, c[-len(x):], 1)
+            rsi = _calc_rsi(c)
+
+            # Predicción combinada IA + Fibonacci + Estadística
+            at_support = abs(dist_fib) < 2.5  # Cerca del nivel Fib
+            if sig > 15 and at_support and rsi < 40:
+                pred = "🟢 REBOTE PROBABLE: Soporte Fib + señal IA alcista + RSI sobreventa"
+                cambio_tend = "SÍ — Posible cambio de tendencia a alcista"
+            elif sig > 15 and slope > 0:
+                pred = f"🟡 REBOTE POSIBLE: Momentum IA positivo pero sin soporte Fib confirmado"
+                cambio_tend = "PARCIAL — Necesita confirmar quiebre"
+            elif sig < -15:
+                pred = "🔴 CONTINUACIÓN BAJISTA: IA detecta presión vendedora persistente"
+                cambio_tend = "NO — Tendencia bajista continúa"
+            elif at_support:
+                pred = f"🟡 EN SOPORTE Fib {nearest_fib[0]}: Zona de decisión crítica"
+                cambio_tend = "INDEFINIDO — Esperar confirmación"
+            else:
+                pred = f"⚪ Sin señal clara. Próximo soporte: {nearest_fib[0]} = ${nearest_fib[1]}"
+                cambio_tend = "NO DETERMINADO"
+
+            fib_str = " | ".join(f"{k}=${v}" for k,v in fib_levels.items())
+            fallen.append({
+                "sym": sym, "price": price, "drop": drop,
+                "fib_nearest": f"{nearest_fib[0]}=${nearest_fib[1]}",
+                "fib_all": fib_str,
+                "pred": pred,
+                "cambio": cambio_tend,
+                "rsi": rsi,
+                "sig": sig,
+            })
+
     fallen.sort(key=lambda x: x["drop"])
-    rows = "".join(f"""<tr><td><b>{p["sym"]}</b></td><td>${p["price"]:.2f}</td><td class="down"><b>{p["drop"]:.1f}%</b></td><td>${p["fib"]:.2f}</td><td><b>{p["pred"]}</b></td></tr>""" for p in fallen[:10])
-    
-    return f"""<div class="rpt-section"><h2>📉 11. Fibonacci Predictivo — Sustentado por IA</h2>
-<table class="rpt-table"><thead><tr><th>Ticker</th><th>Precio</th><th>Caída</th><th>Nivel 0.618</th><th>Predicción IA</th></tr></thead><tbody>{rows}</tbody></table></div>"""
+    rows = "".join(f"""<tr>
+        <td><b>{p["sym"]}</b></td>
+        <td>${p["price"]:.2f}</td>
+        <td class="down"><b>{p["drop"]:.1f}%</b></td>
+        <td style="font-size:10px">{p["fib_nearest"]}</td>
+        <td>{_rsi_text(p["rsi"])}</td>
+        <td style="font-size:10px"><b>{p["pred"]}</b></td>
+        <td style="font-size:10px;color:{'#26a69a' if 'SÍ' in p['cambio'] else '#ef5350' if 'NO —' in p['cambio'] else '#ff9800'}">{p["cambio"]}</td>
+    </tr>""" for p in fallen[:15])
+
+    return f"""<div class="rpt-section">
+<h2>📉 11. Fibonacci Predictivo + IA — Cambio de Tendencia</h2>
+<p class="rpt-narrative">Análisis combinado: niveles Fibonacci 6 meses + señal NAU Quantum + RSI + regresión estadística para predecir si habrá cambio de tendencia.</p>
+<table class="rpt-table"><thead><tr>
+<th>Ticker</th><th>Precio</th><th>Caída</th><th>Fib más cercano</th><th>RSI</th><th>Predicción IA</th><th>Cambio Tendencia</th>
+</tr></thead><tbody>{rows}</tbody></table></div>"""
 
 @app.get("/api/chart")
 def get_chart(symbol: str = Query("AAPL"), interval: str = Query("1d"), prepost: bool = Query(False)):
