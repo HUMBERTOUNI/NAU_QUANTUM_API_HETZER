@@ -829,14 +829,12 @@ function renderChart() {
   // Signals markers with custom colors and sizes
   if (state.indicators.signals && chartData.signals) {
     const c = getColors();
+    const markers = [];
+    let lastTime = 0;
+    const minGap = state.interval === '1d' ? 86400*2 : state.interval === '1wk' ? 86400*7 : 3600*2;
+    // Map signalSize to marker size (1-4 scale for lightweight-charts)
     const sizeMap = {10: 1, 12: 2, 14: 3, 16: 3, 18: 4};
     const markerSize = sizeMap[c.signalSize] || 2;
-    // Display gap filter — only for visual clarity, signals always exist in data
-    const gapMap = {'1m':120,'5m':600,'15m':1800,'30m':3600,'1h':7200,
-                    '2h':14400,'4h':28800,'1d':172800,'1wk':604800,'1mo':2592000};
-    const minGap = gapMap[state.interval] || 7200;
-    let lastTime = 0;
-    const markers = [];
     chartData.signals.forEach(s => {
       if (s.time - lastTime < minGap) return;
       lastTime = s.time;
@@ -1052,33 +1050,44 @@ document.getElementById('runScanBtn').onclick = async () => {
   const tbody = document.getElementById('scannerTbody');
   const info = document.getElementById('scanInfo');
   const indexFilter = document.getElementById('scanIndexFilter').value;
+  const runBtn = document.getElementById('runScanBtn');
+
   loading.style.display = 'block';
   loading.innerHTML = `<div style="font-size:14px;margin-bottom:8px">📡 Escaneando ${indexFilter}...</div><div style="color:var(--text3)">Esto puede tomar 2-5 minutos. No cierres esta ventana.</div>`;
   tbody.innerHTML = '';
   info.textContent = 'Escaneando...';
+  runBtn.disabled = true;
+  document.getElementById('downloadScanBtn').style.display = 'none';
 
   try {
     const conf = document.getElementById('scanConfInput').value;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 600000);  // 10 min timeout
+    const timeout = setTimeout(() => controller.abort(), 600000);
     const resp = await fetch(`${API_BASE}/api/scan?interval=${state.interval}&min_confidence=${conf}&index=${encodeURIComponent(indexFilter)}`, { signal: controller.signal });
     clearTimeout(timeout);
+
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
     const data = await resp.json();
     loading.style.display = 'none';
 
-    if (data.scan_results) {
+    if (data.error) {
+      info.textContent = `Error: ${data.error}`;
+      tbody.innerHTML = `<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--red)">⚠️ ${data.error}</td></tr>`;
+    } else if (data.scan_results && data.scan_results.length > 0) {
       tbody.innerHTML = data.scan_results.map(r => {
         const cls = r.direction === 'LONG' ? 'long' : 'short';
+        const fmt = (v) => (v != null && !isNaN(v)) ? `$${Number(v).toFixed(2)}` : '—';
         return `<tr style="cursor:pointer" data-sym="${r.symbol}">
           <td><b>${r.symbol}</b></td>
           <td style="font-size:10px;color:var(--text2)">${r.index || ''}</td>
           <td class="${cls}"><b>${r.label}</b></td>
           <td class="${cls}">${r.direction}</td>
-          <td>$${r.price?.toFixed(2)}</td>
-          <td><b>$${r.entry?.toFixed(2)}</b></td>
-          <td style="color:var(--red)">$${r.sl?.toFixed(2)}</td>
-          <td style="color:var(--green)">$${r.tp1?.toFixed(2)}</td>
-          <td style="color:var(--green)">$${r.tp2?.toFixed(2)}</td>
+          <td>${fmt(r.price)}</td>
+          <td><b>${fmt(r.entry)}</b></td>
+          <td style="color:var(--red)">${fmt(r.sl)}</td>
+          <td style="color:var(--green)">${fmt(r.tp1)}</td>
+          <td style="color:var(--green)">${fmt(r.tp2)}</td>
           <td><b>${r.confidence?.toFixed(0)}%</b></td>
           <td style="font-size:10px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.reasoning}">${r.reasoning}</td>
         </tr>`;
@@ -1094,10 +1103,17 @@ document.getElementById('runScanBtn').onclick = async () => {
       });
       info.textContent = `${data.total_found} señales de ${data.total_scanned} activos | ${data.scan_time}s | TF: ${state.interval} | Filtro: ${indexFilter}`;
       if (data.scan_results.length > 0) document.getElementById('downloadScanBtn').style.display = 'inline-block';
+    } else {
+      tbody.innerHTML = `<tr><td colspan="11" style="padding:30px;text-align:center;color:var(--text2)">Sin señales con confianza ≥${conf}%. Prueba reducir el mínimo o cambiar el filtro.</td></tr>`;
+      info.textContent = `0 señales de ${data.total_scanned || 0} activos | ${data.scan_time || 0}s`;
     }
   } catch(e) {
     loading.style.display = 'none';
-    info.textContent = 'Error: ' + e.message;
+    const msg = e.name === 'AbortError' ? 'Timeout — el escaneo tardó demasiado' : e.message;
+    tbody.innerHTML = `<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--red)">⚠️ ${msg}<br><small style="color:var(--text3)">Verifica que el servidor ${API_BASE} esté activo.</small></td></tr>`;
+    info.textContent = 'Error: ' + msg;
+  } finally {
+    runBtn.disabled = false;
   }
 };
 
@@ -1283,45 +1299,69 @@ document.getElementById('runVCBtn').onclick = async () => {
   const tbody = document.getElementById('vcTbody');
   const info = document.getElementById('vcInfo');
   const page = document.getElementById('vcPageSelect').value;
+  const runBtn = document.getElementById('runVCBtn');
+
   loading.style.display = 'block';
   tbody.innerHTML = '';
-  info.textContent = `Escaneando tanda ${page} (acciones ${(page-1)*500+1}-${page*500})...`;
-  
+  info.textContent = `Escaneando tanda ${page}...`;
+  runBtn.disabled = true;
+  runBtn.textContent = '⏳ Escaneando...';
+  document.getElementById('downloadVCBtn').style.display = 'none';
+
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 900000);
     const resp = await fetch(`${API_BASE}/api/scan_vc?interval=${state.interval}&page=${page}`, { signal: controller.signal });
     clearTimeout(timeout);
+
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
     const data = await resp.json();
     loading.style.display = 'none';
-    
-    if (data.results && data.results.length > 0) {
+
+    if (data.error) {
+      info.textContent = `Error del servidor: ${data.error}`;
+      tbody.innerHTML = `<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--red)">⚠️ ${data.error}</td></tr>`;
+    } else if (data.results && data.results.length > 0) {
       tbody.innerHTML = data.results.map(r => {
         const cls = r.direction === 'LONG' ? 'long' : 'short';
+        const fmt = (v) => (v != null && !isNaN(v)) ? `$${Number(v).toFixed(2)}` : '—';
         return `<tr style="cursor:pointer;border-bottom:1px solid var(--bg)" data-sym="${r.symbol}">
           <td style="padding:8px 10px;font-weight:600">${r.symbol}</td>
           <td style="padding:8px 10px;font-size:11px;color:var(--text2)">${r.name || r.symbol}</td>
-          <td style="padding:8px 10px" class="${cls}"><b>${r.label}</b></td>
-          <td style="padding:8px 10px;color:var(--gold)"><b>${r.consecutive}</b></td>
-          <td style="padding:8px 10px">$${r.price?.toFixed(2)}</td>
-          <td style="padding:8px 10px"><b>$${r.entry?.toFixed(2)}</b></td>
-          <td style="padding:8px 10px;color:var(--red)">$${r.sl?.toFixed(2)}</td>
-          <td style="padding:8px 10px;color:var(--green)">$${r.tp1?.toFixed(2)}</td>
-          <td style="padding:8px 10px;color:var(--green)">$${r.tp2?.toFixed(2)}</td>
-          <td style="padding:8px 10px;color:var(--cyan)">$${r.tp3?.toFixed(2)}</td>
+          <td style="padding:8px 10px" class="${cls}"><b>${r.label || r.direction}</b></td>
+          <td style="padding:8px 10px;color:var(--gold)"><b>${r.consecutive}x</b></td>
+          <td style="padding:8px 10px">${fmt(r.price)}</td>
+          <td style="padding:8px 10px"><b>${fmt(r.entry)}</b></td>
+          <td style="padding:8px 10px;color:var(--red)">${fmt(r.sl)}</td>
+          <td style="padding:8px 10px;color:var(--green)">${fmt(r.tp1)}</td>
+          <td style="padding:8px 10px;color:var(--green)">${fmt(r.tp2)}</td>
+          <td style="padding:8px 10px;color:var(--cyan)">${fmt(r.tp3)}</td>
         </tr>`;
       }).join('');
       tbody.querySelectorAll('tr').forEach(tr => {
-        tr.onclick = () => { state.symbol = tr.dataset.sym; searchInput.value = state.symbol; saveState(); document.getElementById('vcModal').style.display = 'none'; loadChart(); };
+        tr.onclick = () => {
+          state.symbol = tr.dataset.sym;
+          searchInput.value = state.symbol;
+          saveState();
+          document.getElementById('vcModal').style.display = 'none';
+          loadChart();
+        };
       });
       document.getElementById('downloadVCBtn').style.display = 'inline-block';
-      info.textContent = `${data.results.length} señales consecutivas | Tanda ${data.page}/${data.total_pages} | ${data.total_scanned} activos | ${data.scan_time}s | TF: ${state.interval}`;
+      info.textContent = `✅ ${data.results.length} señales consecutivas | Tanda ${data.page}/${data.total_pages} | ${data.total_scanned} activos escaneados | ${data.scan_time}s | TF: ${state.interval}`;
     } else {
-      info.textContent = `0 señales en tanda ${data.page || page}/${data.total_pages || '?'} | ${data.total_scanned || 0} activos | ${data.scan_time || 0}s`;
+      tbody.innerHTML = `<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--text2)">Sin señales consecutivas en esta tanda. Prueba otro timeframe o tanda.</td></tr>`;
+      info.textContent = `0 señales | Tanda ${data.page || page}/${data.total_pages || '?'} | ${data.total_scanned || 0} activos | ${data.scan_time || 0}s`;
     }
   } catch(e) {
     loading.style.display = 'none';
-    info.textContent = 'Error: ' + e.message;
+    const msg = e.name === 'AbortError' ? 'Timeout — el escaneo tardó demasiado' : e.message;
+    tbody.innerHTML = `<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--red)">⚠️ ${msg}<br><small style="color:var(--text3)">Verifica que el servidor ${API_BASE} esté activo.</small></td></tr>`;
+    info.textContent = 'Error: ' + msg;
+  } finally {
+    runBtn.disabled = false;
+    runBtn.textContent = '⚡ Buscar';
   }
 };
 
