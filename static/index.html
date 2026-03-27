@@ -243,10 +243,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
     <div id="factorPanel"></div>
   </div>
   <div id="watchlistPanel" class="hidden">
-    <div id="watchlistHeader" style="flex-direction:column;gap:4px">
-      <div style="display:flex;justify-content:space-between;align-items:center;width:100%">⭐ Favoritos <button id="closeWL" style="font-size:18px">✕</button></div>
-      <input id="wlSearchInput" type="text" placeholder="Buscar favorito..." style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg3);border:1px solid var(--bg4);color:var(--text);border-radius:3px">
-    </div>
+    <div id="watchlistHeader">⭐ Favoritos <button id="closeWL" style="font-size:18px">✕</button></div>
     <div id="watchlistItems"></div>
   </div>
 </div>
@@ -293,7 +290,7 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
       </div>
       <table id="scannerTable">
         <thead><tr>
-          <th>Símbolo</th><th>Nombre</th><th>Índice</th><th>Señal</th><th>Dir.</th><th>Precio</th>
+          <th>Símbolo</th><th>Índice</th><th>Señal</th><th>Dir.</th><th>Precio</th>
           <th>Entrada</th><th>SL</th><th>TP1</th><th>TP2</th><th>Conf%</th><th>Sustento</th>
         </tr></thead>
         <tbody id="scannerTbody"></tbody>
@@ -435,12 +432,6 @@ input:focus,select:focus{outline:none;border-color:var(--cyan)}
       <label>EMA 200 <select id="setWidthEma200"><option value="1">Fino</option><option value="2" selected>Normal</option><option value="3">Grueso</option><option value="4">Extra</option></select></label>
       <label>SMA 20 <select id="setWidthSma20"><option value="1" selected>Fino</option><option value="2">Normal</option><option value="3">Grueso</option></select></label>
       <label>Bollinger <select id="setWidthBB"><option value="1" selected>Fino</option><option value="2">Normal</option><option value="3">Grueso</option></select></label>
-    </div>
-    <div class="setting-group">
-      <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Panel de Favoritos</h3>
-      <label>Fondo panel <input type="color" id="setWlBgColor" value="#131722"></label>
-      <label>Color encabezados <input type="color" id="setWlHeaderColor" value="#00bcd4"></label>
-      <label>Color texto <input type="color" id="setWlTextColor" value="#d1d4dc"></label>
     </div>
     <div class="setting-group">
       <h3 style="font-size:13px;color:var(--text2);margin-bottom:8px">Velas Post-Market</h3>
@@ -706,15 +697,6 @@ document.getElementById('wlBtn').onclick = () => {
 };
 document.getElementById('closeWL').onclick = () => {
   document.getElementById('watchlistPanel').classList.add('hidden');
-};
-
-// Watchlist search filter
-document.getElementById('wlSearchInput').oninput = (e) => {
-  const q = e.target.value.toLowerCase();
-  document.querySelectorAll('#watchlistItems .wl-item').forEach(el => {
-    const sym = el.dataset.sym.toLowerCase();
-    el.style.display = sym.includes(q) ? '' : 'none';
-  });
 };
 
 // ═══ CHARTS INITIALIZATION ═══
@@ -1012,7 +994,7 @@ async function loadChart(retries = 2) {
       if (attempt > 0 && !hasLoadedOnce) overlay.textContent = `Reintentando... (${attempt + 1})`;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120000);
-      const url = `${API_BASE}/api/chart?symbol=${state.symbol}&interval=${state.interval}&prepost=false`;
+      const url = `${API_BASE}/api/chart?symbol=${state.symbol}&interval=${state.interval}&prepost=true`;
       const resp = await fetch(url, { signal: controller.signal });
       clearTimeout(timeout);
       const data = await resp.json();
@@ -1025,9 +1007,9 @@ async function loadChart(retries = 2) {
 
       renderChart();
 
-      // Always show the most recent bars (smooth transition)
-      if (chartData.bars.length > 50) {
-        const barsToShow = isNewSymbol ? Math.min(250, chartData.bars.length) : Math.min(150, chartData.bars.length);
+      // On NEW symbol: zoom to last ~250 bars (approx 1 year daily)
+      if (isNewSymbol && chartData.bars.length > 50) {
+        const barsToShow = Math.min(250, chartData.bars.length);
         mainChart.timeScale().setVisibleLogicalRange({
           from: chartData.bars.length - barsToShow,
           to: chartData.bars.length + 10,
@@ -1089,7 +1071,6 @@ document.getElementById('runScanBtn').onclick = async () => {
         const cls = r.direction === 'LONG' ? 'long' : 'short';
         return `<tr style="cursor:pointer" data-sym="${r.symbol}">
           <td><b>${r.symbol}</b></td>
-          <td style="font-size:11px;color:var(--text2)">${r.name || ""}</td>
           <td style="font-size:10px;color:var(--text2)">${r.index || ''}</td>
           <td class="${cls}"><b>${r.label}</b></td>
           <td class="${cls}">${r.direction}</td>
@@ -1203,16 +1184,7 @@ document.getElementById('applySettings').onclick = () => {
   state.settings.extBullColor = document.getElementById('setExtBullColor').value;
   state.settings.extBearColor = document.getElementById('setExtBearColor').value;
   state.settings.extOpacity = document.getElementById('setExtOpacity').value;
-  state.settings.wlBgColor = document.getElementById('setWlBgColor').value;
-  state.settings.wlHeaderColor = document.getElementById('setWlHeaderColor').value;
-  state.settings.wlTextColor = document.getElementById('setWlTextColor').value;
   localStorage.setItem('nau_settings', JSON.stringify(state.settings));
-  // Apply watchlist colors
-  const wlPanel = document.getElementById('watchlistPanel');
-  if (wlPanel) {
-    wlPanel.style.background = state.settings.wlBgColor || '#131722';
-    wlPanel.style.color = state.settings.wlTextColor || '#d1d4dc';
-  }
   const c = getColors();
   mainSeries.applyOptions({ upColor: c.bull, downColor: c.bear, borderUpColor: c.bull, borderDownColor: c.bear, wickUpColor: c.bull, wickDownColor: c.bear });
   if (chartData) renderChart();
