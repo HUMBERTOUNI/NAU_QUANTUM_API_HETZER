@@ -1,0 +1,11 @@
+services:
+  sentinel-quantum-edge:
+    build: .
+    ports:
+      - "9000:9000"
+    volumes:
+      - nau_cache:/tmp/nau_disk_cache
+    restart: always
+
+volumes:
+  nau_cache:
