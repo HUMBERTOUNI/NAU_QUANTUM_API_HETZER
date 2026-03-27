@@ -129,7 +129,7 @@ def _get_lock(sym):
 def safe_download(sym, period, interval, prepost=False):
     with _get_lock(sym):
         try:
-            raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=False, progress=False)
+            raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False)
         except Exception as e:
             return None, str(e)
     if raw is None or raw.empty: return None, "Empty"
