@@ -115,7 +115,7 @@ def compute_technicals(df):
         df["MACD"] = macd.values; df["MACD_signal"] = sig.values; df["MACD_hist"] = (macd-sig).values
     return df
 
-import threading
+import threading, os, pickle, hashlib
 
 # Per-symbol locks for parallel downloads (uses all 8 CPUs)
 _sym_locks = {}
@@ -126,7 +126,33 @@ def _get_lock(sym):
             _sym_locks[sym] = threading.Lock()
         return _sym_locks[sym]
 
+# Disk cache — instant reload for repeated stocks (14-day retention)
+_DCACHE = "/tmp/nau_disk_cache"
+os.makedirs(_DCACHE, exist_ok=True)
+
+def _dc_path(sym, period, interval):
+    return os.path.join(_DCACHE, hashlib.md5(f"{sym}:{period}:{interval}".encode()).hexdigest() + ".pkl")
+
+def _dc_get(sym, period, interval):
+    try:
+        p = _dc_path(sym, period, interval)
+        if not os.path.exists(p): return None
+        age = time.time() - os.path.getmtime(p)
+        ttl = 1800 if interval in ("1d","1wk","1mo","3mo") else 300
+        if age > ttl: return None
+        with open(p, 'rb') as f: return pickle.load(f)
+    except: return None
+
+def _dc_set(sym, period, interval, df):
+    try:
+        with open(_dc_path(sym, period, interval), 'wb') as f: pickle.dump(df, f)
+    except: pass
+
 def safe_download(sym, period, interval, prepost=False):
+    # Check disk cache first (instant)
+    cached = _dc_get(sym, period, interval)
+    if cached is not None:
+        return cached, None
     with _get_lock(sym):
         try:
             raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False)
@@ -155,6 +181,7 @@ def safe_download(sym, period, interval, prepost=False):
         df[col] = pd.to_numeric(s, errors='coerce')
     df['Volume'] = df['Volume'].fillna(0)
     df = df.dropna(subset=['Open','High','Low','Close'])
+    _dc_set(sym, period, interval, df)
     return df, None
 
 def get_prev_close(sym):
@@ -213,7 +240,9 @@ def download_and_compute(sym, interval, prepost=False):
     if len(df) < 50: return {"error": f"Only {len(df)} bars for {sym} on {interval}. Need 50+."}
     t0 = time.time()
     try:
-        df = indicator.compute(df)
+        # CRITICAL: New indicator instance per call for thread safety
+        local_indicator = NAUQuantumAlphaIndicator()
+        df = local_indicator.compute(df)
     except Exception as e:
         return {"error": f"Engine error: {str(e)} | {traceback.format_exc()[-300:]}"}
     df = compute_technicals(df)
