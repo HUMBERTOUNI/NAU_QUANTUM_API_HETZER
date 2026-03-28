@@ -117,16 +117,11 @@ def compute_technicals(df):
 
 import threading, os, pickle, hashlib
 
-# Per-symbol locks for parallel downloads (uses all 8 CPUs)
-_sym_locks = {}
-_meta_lock = threading.Lock()
-def _get_lock(sym):
-    with _meta_lock:
-        if sym not in _sym_locks:
-            _sym_locks[sym] = threading.Lock()
-        return _sym_locks[sym]
+# GLOBAL lock for ALL yfinance calls — yfinance uses shared requests.Session
+# Per-symbol locks cause data mixing between threads (root cause of repeated values)
+_yf_lock = threading.Lock()
 
-# Disk cache — instant reload for repeated stocks (14-day retention)
+# Disk cache for instant repeated loads
 _DCACHE = "/tmp/nau_disk_cache"
 os.makedirs(_DCACHE, exist_ok=True)
 
@@ -149,11 +144,10 @@ def _dc_set(sym, period, interval, df):
     except: pass
 
 def safe_download(sym, period, interval, prepost=False):
-    # Check disk cache first (instant)
     cached = _dc_get(sym, period, interval)
     if cached is not None:
         return cached, None
-    with _get_lock(sym):
+    with _yf_lock:
         try:
             raw = yf.download(sym, period=period, interval=interval, prepost=prepost, auto_adjust=True, progress=False)
         except Exception as e:
@@ -189,7 +183,7 @@ def get_prev_close(sym):
     if ck in PREV_CLOSE_CACHE and time.time() - PREV_CLOSE_CACHE[ck][1] < 3600:
         return PREV_CLOSE_CACHE[ck][0]
     try:
-        with _get_lock(sym):
+        with _yf_lock:
             t = yf.Ticker(sym)
             info = t.fast_info
             pc = float(info.get("previousClose", 0) or info.get("regularMarketPreviousClose", 0))
@@ -835,7 +829,7 @@ def _safe_get_data(symbols, period="1mo"):
     results = {}
     for sym in symbols:
         try:
-            with _get_lock(sym):
+            with _yf_lock:
                 hist = yf.download(sym, period=period, interval="1d", progress=False, auto_adjust=True)
             if hist is not None and not hist.empty and len(hist) >= 2:
                 if isinstance(hist.columns, pd.MultiIndex):
@@ -979,7 +973,7 @@ def report_earnings_next_10days():
     earnings = []
     for sym in SP500[:80]:
         try:
-            with _get_lock(sym):
+            with _yf_lock:
                 t = yf.Ticker(sym)
                 cal = t.calendar
             if cal is not None and not cal.empty:
